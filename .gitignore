@@ -1,0 +1,8 @@
+node_modules
+dist
+.DS_Store
+.env
+.env.local
+data/song-graph.json
+data/user-profile.json
+data/playable-index.json

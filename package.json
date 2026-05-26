@@ -1,0 +1,25 @@
+{
+  "name": "claudio-core-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite --host 127.0.0.1",
+    "dev:server": "node --watch server/index.js",
+    "dev:music": "PORT=3300 node /Users/wzy/Desktop/CodeX-20260303/近期项目合集/2026-04-27-Ai电台/个人电台/services/netease-runner/node_modules/NeteaseCloudMusicApi/app.js",
+    "start": "node server/index.js",
+    "graph:build": "node scripts/build-song-graph.js",
+    "build": "vite build",
+    "validate": "npm run graph:build && npm run build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.5.0",
+    "concurrently": "^9.1.2",
+    "edge-tts-universal": "^1.4.0",
+    "express": "^4.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.3.5"
+  }
+}

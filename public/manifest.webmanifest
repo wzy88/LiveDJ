@@ -1,0 +1,8 @@
+{
+  "name": "Claudio Core",
+  "short_name": "Claudio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f1e7",
+  "theme_color": "#101820"
+}
