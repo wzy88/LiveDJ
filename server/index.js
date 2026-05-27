@@ -1,9 +1,11 @@
 import express from "express";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 import { EdgeTTS } from "edge-tts-universal";
 import { importPlaylistText, loadGraph, loadProfile, recommend, recordFeedback, summarizeProfile } from "./recommender.js";
 import { resolvePlayableTrack } from "./music.js";
@@ -16,6 +18,7 @@ const host = process.env.HOST || "0.0.0.0";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
+const graphPath = path.join(rootDir, "data", "song-graph.json");
 const ttsCache = new Map();
 const allowedOrigins = new Set(
   [
@@ -281,6 +284,30 @@ function cleanSpeechText(value = "") {
     .slice(0, 220);
 }
 
+await ensureRuntimeData();
+
 app.listen(port, host, () => {
   console.log(`Claudio Core listening at http://${host}:${port}`);
 });
+
+async function ensureRuntimeData() {
+  if (fs.existsSync(graphPath)) return;
+  const sourceUrl = cleanText(process.env.SONG_GRAPH_URL || "");
+  if (!sourceUrl) {
+    console.warn("song-graph.json is missing and SONG_GRAPH_URL is not configured.");
+    return;
+  }
+  console.log("Downloading song graph from SONG_GRAPH_URL...");
+  const response = await fetch(sourceUrl);
+  if (!response.ok) {
+    console.warn(`Failed to download song graph: ${response.status} ${response.statusText}`);
+    return;
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  const payload = sourceUrl.endsWith(".gz") || response.headers.get("content-encoding") === "gzip"
+    ? gunzipSync(bytes)
+    : bytes;
+  await fsp.mkdir(path.dirname(graphPath), { recursive: true });
+  await fsp.writeFile(graphPath, payload);
+  console.log(`Downloaded song graph to ${graphPath}`);
+}

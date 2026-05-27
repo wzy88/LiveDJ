@@ -40,6 +40,14 @@ Required local data files are intentionally not committed:
 - `data/playable-index.json`
 - `data/user-profile.json`
 
+For deployed backends, upload `data/song-graph.json` or `data/song-graph.json.gz` to object storage and set:
+
+```bash
+SONG_GRAPH_URL=https://your-object-storage/song-graph.json
+```
+
+The server downloads it on startup when the local file is missing.
+
 Set `PUBLIC_ORIGIN` on the backend to the deployed frontend origin, for example:
 
 ```bash
