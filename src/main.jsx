@@ -33,6 +33,7 @@ function App() {
   const [isNarrating, setIsNarrating] = useState(false);
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [musicVolume, setMusicVolume] = useState(0.88);
   const [djLine, setDjLine] = useState("把你的想法丢给我，我来接歌。");
   const [dialogueMessages, setDialogueMessages] = useState([
@@ -132,6 +133,7 @@ function App() {
       appendDialogueMessage("dj", `我读到了 ${result.importedCount} 首，匹配到 ${result.matchedCount} 首。现在按你的歌单重排。`);
       setStatus(`导入 ${result.importedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
       await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
+      setIsImportPanelOpen(false);
     } catch (error) {
       setStatus(`歌单导入失败：${error.message}`);
       appendDialogueMessage("dj", `歌单导入失败：${error.message}`);
@@ -659,10 +661,15 @@ function App() {
               <p className="eyebrow">Claudio</p>
               <h1>今晚先听点像人的电台</h1>
             </div>
-            <div className="statusPills">
-              <span className="pill">LOGIN</span>
-              <span className="pill pillActive">DARK</span>
-              <span className="pill">LIVE</span>
+            <div className="topActions">
+              <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
+                导入歌单
+              </button>
+              <div className="statusPills">
+                <span className="pill">LOGIN</span>
+                <span className="pill pillActive">DARK</span>
+                <span className="pill">LIVE</span>
+              </div>
             </div>
           </header>
 
@@ -838,6 +845,34 @@ function App() {
           )}
         </div>
       </aside>
+      {isImportPanelOpen ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="playlist-import-title">
+          <div className="playlistModal">
+            <div className="modalHead">
+              <div>
+                <p className="label">Taste Source</p>
+                <h2 id="playlist-import-title">导入你的歌单</h2>
+              </div>
+              <button type="button" className="iconButton" onClick={() => setIsImportPanelOpen(false)} aria-label="关闭导入面板">
+                ×
+              </button>
+            </div>
+            <textarea
+              value={playlistText}
+              onChange={(event) => setPlaylistText(event.target.value)}
+              spellCheck="false"
+              placeholder={"每行一首，例如：\n遇见 - 孙燕姿\n十年 - 陈奕迅"}
+            />
+            <div className="modalActions">
+              <button type="button" onClick={() => setPlaylistText(samplePlaylist)}>填入示例</button>
+              <button type="button" className="primaryAction" onClick={importPlaylist} disabled={isImporting}>
+                {isImporting ? "导入中" : "导入并重排"}
+              </button>
+            </div>
+            <pre>{profileText}</pre>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
