@@ -1,6 +1,9 @@
 import { getCleanPlayableRecord, getPlayableRecord, storePlayableRecord } from "./playable-index.js";
+import { createRequire } from "node:module";
 
-const musicApiBase = process.env.MUSIC_API_BASE || "http://127.0.0.1:3300";
+const require = createRequire(import.meta.url);
+const musicApiBase = process.env.MUSIC_API_BASE || "";
+let embeddedMusicApi = null;
 
 export async function resolvePlayableTrack({ songId = "", title, artist, providerIds = [], durationSec = null }) {
   const cached = songId ? getCleanPlayableRecord(songId) : null;
@@ -76,6 +79,9 @@ async function resolveById(id, title, artist, durationSec) {
 }
 
 async function searchSongs(keyword) {
+  const embedded = await callEmbeddedMusicApi("search", { keywords: keyword, limit: "20" });
+  if (embedded) return embedded.result?.songs || [];
+  if (!musicApiBase) return [];
   const url = new URL("/search", musicApiBase);
   url.searchParams.set("keywords", keyword);
   url.searchParams.set("limit", "20");
@@ -87,10 +93,14 @@ async function searchSongs(keyword) {
 
 async function resolveSongUrl(id, expectedDurationMs) {
   const attempts = [
-    ["/song/url/v1", { id: String(id), level: "standard" }],
-    ["/song/url", { id: String(id) }]
+    ["song_url_v1", "/song/url/v1", { id: String(id), level: "standard" }],
+    ["song_url", "/song/url", { id: String(id) }]
   ];
-  for (const [pathname, params] of attempts) {
+  for (const [method, pathname, params] of attempts) {
+    const embedded = await callEmbeddedMusicApi(method, params);
+    const embeddedItem = embedded?.data?.[0];
+    if (embeddedItem?.url && isFullUrl(embeddedItem, expectedDurationMs)) return embeddedItem.url;
+    if (!musicApiBase) continue;
     const url = new URL(pathname, musicApiBase);
     for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
     const response = await fetch(url, { signal: AbortSignal.timeout(4500) }).catch(() => null);
@@ -103,6 +113,9 @@ async function resolveSongUrl(id, expectedDurationMs) {
 }
 
 async function fetchSongDetail(id) {
+  const embedded = await callEmbeddedMusicApi("song_detail", { ids: String(id) });
+  if (embedded?.songs?.[0]) return embedded.songs[0];
+  if (!musicApiBase) return null;
   const url = new URL("/song/detail", musicApiBase);
   url.searchParams.set("ids", String(id));
   const response = await fetch(url, { signal: AbortSignal.timeout(4500) }).catch(() => null);
@@ -142,6 +155,30 @@ function getDurationMs(song) {
 
 function normalize(value = "") {
   return String(value).toLowerCase().replace(/\s+/g, "").trim();
+}
+
+async function callEmbeddedMusicApi(method, params) {
+  const api = getEmbeddedMusicApi();
+  if (!api?.[method]) return null;
+  try {
+    const result = await Promise.race([
+      api[method](params),
+      new Promise((resolve) => setTimeout(() => resolve(null), 4500))
+    ]);
+    return result?.body || null;
+  } catch {
+    return null;
+  }
+}
+
+function getEmbeddedMusicApi() {
+  if (embeddedMusicApi !== null) return embeddedMusicApi;
+  try {
+    embeddedMusicApi = require("NeteaseCloudMusicApi");
+  } catch {
+    embeddedMusicApi = false;
+  }
+  return embeddedMusicApi || null;
 }
 
 function isDirtyResolvedRecord(record) {

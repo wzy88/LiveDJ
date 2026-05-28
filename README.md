@@ -53,3 +53,8 @@ Set `PUBLIC_ORIGIN` on the backend to the deployed frontend origin, for example:
 ```bash
 PUBLIC_ORIGIN=https://radio.example.com
 ```
+
+Playable music is resolved at runtime. By default the backend uses the bundled
+`NeteaseCloudMusicApi` package internally, so a single Railway service is enough
+for the MVP. If you deploy a separate music API, set `MUSIC_API_BASE` to that
+service URL.
