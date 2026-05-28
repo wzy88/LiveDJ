@@ -7,11 +7,12 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { EdgeTTS } from "edge-tts-universal";
-import { importPlaylistText, loadGraph, loadProfile, recommend, recordFeedback, summarizeProfile } from "./recommender.js";
+import { importPlaylistText, importPlaylistTracks, loadGraph, loadProfile, recommend, recordFeedback, summarizeProfile } from "./recommender.js";
 import { resolvePlayableTrack } from "./music.js";
 import { loadPlayableIndex, storePlayableRecord } from "./playable-index.js";
 import { buildRadioProgram } from "./radio-program.js";
-import { isLlmConfigured } from "./llm.js";
+import { extractTracksFromPlaylistScreenshot, isLlmConfigured } from "./llm.js";
+import { tracksFromPlaylistUrl } from "./playlist-import.js";
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -34,7 +35,7 @@ const allowedOrigins = new Set(
   ].filter(Boolean)
 );
 
-app.use(express.json({ limit: "3mb" }));
+app.use(express.json({ limit: "8mb" }));
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.has(origin)) {
@@ -149,6 +150,26 @@ app.get("/api/profile", (_req, res) => {
 app.post("/api/profile/import", async (req, res) => {
   try {
     res.json(await importPlaylistText(req.body?.text || ""));
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/api/profile/import-link", async (req, res) => {
+  try {
+    const source = await tracksFromPlaylistUrl(req.body?.url || "");
+    const profile = await importPlaylistTracks(source.tracks);
+    res.json({ ...profile, source: { type: "link", provider: source.provider, playlistId: source.playlistId, extractedCount: source.tracks.length } });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/api/profile/import-screenshot", async (req, res) => {
+  try {
+    const tracks = await extractTracksFromPlaylistScreenshot(req.body?.imageDataUrl || "");
+    const profile = await importPlaylistTracks(tracks);
+    res.json({ ...profile, source: { type: "screenshot", extractedCount: tracks.length } });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

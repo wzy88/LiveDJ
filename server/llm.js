@@ -82,6 +82,59 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
   }
 }
 
+export async function extractTracksFromPlaylistScreenshot(imageDataUrl) {
+  if (!isLlmConfigured()) {
+    throw new Error("截图导入需要先配置 LLM_API_KEY 和 LLM_MODEL。");
+  }
+  const cleanImage = String(imageDataUrl || "").trim();
+  if (!/^data:image\/(png|jpe?g|webp);base64,/i.test(cleanImage)) {
+    throw new Error("请上传 PNG、JPG 或 WebP 歌单截图。");
+  }
+  const response = await fetch(`${llmApiBase}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${llmApiKey}`
+    },
+    body: JSON.stringify({
+      model: process.env.LLM_VISION_MODEL || llmModel,
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "你是歌单截图 OCR。只提取截图中可见歌曲，输出 JSON：{\"tracks\":[{\"title\":\"歌名\",\"artist\":\"歌手\"}]}。不要补全截图里没有的歌。"
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "从这张歌单截图里提取歌曲名和歌手名。" },
+            { type: "image_url", image_url: { url: cleanImage } }
+          ]
+        }
+      ]
+    }),
+    signal: AbortSignal.timeout(12000)
+  });
+  if (!response.ok) {
+    throw new Error(`截图解析失败：${response.status} ${await response.text()}`);
+  }
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  const parsed = JSON.parse(content);
+  const tracks = (Array.isArray(parsed.tracks) ? parsed.tracks : [])
+    .map((track) => ({
+      title: cleanLine(track.title),
+      artist: cleanLine(track.artist)
+    }))
+    .filter((track) => track.title && track.artist)
+    .slice(0, 80);
+  if (!tracks.length) {
+    throw new Error("没有从截图里识别到歌曲。请换一张更清晰、包含歌名和歌手的截图。");
+  }
+  return tracks;
+}
+
 function cleanLine(value = "") {
   return String(value)
     .replace(/\s+/g, " ")

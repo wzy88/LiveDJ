@@ -48,12 +48,16 @@ export function saveProfile(profile) {
 
 export async function importPlaylistText(text) {
   const tracks = parsePlaylistText(text);
+  return importPlaylistTracks(tracks, { resolveUnmatched: true });
+}
+
+export async function importPlaylistTracks(tracks, { resolveUnmatched = false } = {}) {
   const graph = loadGraph();
   const importedTracks = [];
-  for (const track of tracks) {
+  for (const track of normalizeImportedTracks(tracks)) {
     let match = matchSong(graph, track);
     let resolvedTrack = null;
-    if (!match) {
+    if (!match && resolveUnmatched) {
       resolvedTrack = await resolvePlayableTrack({ title: track.title, artist: track.artist }).catch(() => null);
       if (resolvedTrack) {
         match = matchSong(graph, {
@@ -79,6 +83,22 @@ export async function importPlaylistText(text) {
   };
   saveProfile(nextProfile);
   return summarizeProfile(nextProfile, graph);
+}
+
+function normalizeImportedTracks(tracks = []) {
+  const seen = new Set();
+  const result = [];
+  for (const track of Array.isArray(tracks) ? tracks : []) {
+    const title = cleanText(track.title || track.name);
+    const artist = cleanText(track.artist || (track.artists || []).map((item) => item.name || item).join(" / "));
+    if (!title || !artist) continue;
+    const key = `${normalizeSongTitle(title)}::${normalizeArtist(artist)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({ title, artist });
+    if (result.length >= 120) break;
+  }
+  return result;
 }
 
 export function summarizeProfile(profile = loadProfile(), graph = loadGraph()) {

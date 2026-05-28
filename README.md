@@ -64,8 +64,10 @@ Optional LLM DJ talk generation:
 ```bash
 LLM_API_KEY=your-model-api-key
 LLM_MODEL=your-chat-model
+LLM_VISION_MODEL=your-vision-model
 LLM_API_BASE=https://api.openai.com/v1
 ```
 
 When these are not configured, the backend falls back to Claudio's rule-based
-talk script generator.
+talk script generator. Screenshot playlist import needs a vision-capable model;
+playlist links do not.

@@ -3,21 +3,14 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
-const samplePlaylist = [
-  "遇见 - 孙燕姿",
-  "十年 - 陈奕迅",
-  "小幸运 - 田馥甄",
-  "晴天 - 周杰伦",
-  "红色高跟鞋 - 蔡健雅",
-  "旅行的意义 - 陈绮贞",
-  "无条件 - 陈奕迅",
-  "浪费 - 林宥嘉"
-].join("\n");
 
 function App() {
   const [graphStats, setGraphStats] = useState(null);
   const [profile, setProfile] = useState(null);
-  const [playlistText, setPlaylistText] = useState(samplePlaylist);
+  const [importMode, setImportMode] = useState("link");
+  const [playlistUrl, setPlaylistUrl] = useState("");
+  const [playlistImageDataUrl, setPlaylistImageDataUrl] = useState("");
+  const [playlistImageName, setPlaylistImageName] = useState("");
   const [query, setQuery] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
   const [promptText, setPromptText] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
   const [recommendations, setRecommendations] = useState([]);
@@ -116,22 +109,17 @@ function App() {
   }
 
   async function importPlaylist() {
-    const text = playlistText.trim();
-    if (!text) {
-      setStatus("先粘贴歌单内容，再导入。");
-      return;
-    }
     setIsImporting(true);
     setStatus("正在把你的歌单映射到歌曲图谱...");
     try {
-      const result = await fetchJson("/api/profile/import", {
-        method: "POST",
-        body: JSON.stringify({ text })
-      });
+      const result = importMode === "screenshot"
+        ? await importPlaylistScreenshot()
+        : await importPlaylistLink();
+      const extractedCount = result.source?.extractedCount || result.importedCount || 0;
       setProfile(result);
-      appendDialogueMessage("user", `导入了 ${result.importedCount} 首歌`);
-      appendDialogueMessage("dj", `我读到了 ${result.importedCount} 首，匹配到 ${result.matchedCount} 首。现在按你的歌单重排。`);
-      setStatus(`导入 ${result.importedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
+      appendDialogueMessage("user", importMode === "screenshot" ? `上传了一张歌单截图` : `导入了一个歌单链接`);
+      appendDialogueMessage("dj", `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount} 首。现在按你的歌单重排。`);
+      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
       await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
       setIsImportPanelOpen(false);
     } catch (error) {
@@ -140,6 +128,42 @@ function App() {
     } finally {
       setIsImporting(false);
     }
+  }
+
+  async function importPlaylistLink() {
+    const url = playlistUrl.trim();
+    if (!url) throw new Error("请先粘贴歌单链接。");
+    return fetchJson("/api/profile/import-link", {
+      method: "POST",
+      body: JSON.stringify({ url })
+    });
+  }
+
+  async function importPlaylistScreenshot() {
+    if (!playlistImageDataUrl) throw new Error("请先上传歌单截图。");
+    return fetchJson("/api/profile/import-screenshot", {
+      method: "POST",
+      body: JSON.stringify({ imageDataUrl: playlistImageDataUrl })
+    });
+  }
+
+  function handlePlaylistImageChange(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!/^image\/(png|jpe?g|webp)$/i.test(file.type)) {
+      setStatus("请上传 PNG、JPG 或 WebP 截图。");
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setStatus("截图太大了，请上传 4MB 以内的图片。");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPlaylistImageDataUrl(String(reader.result || ""));
+      setPlaylistImageName(file.name);
+    };
+    reader.readAsDataURL(file);
   }
 
   async function loadRecommendations(queryOverride = query, options = {}) {
@@ -798,9 +822,8 @@ function App() {
         <div className="module">
           <div className="moduleHead">
             <h2>用户歌单</h2>
-            <button type="button" onClick={importPlaylist} disabled={isImporting}>{isImporting ? "导入中" : "导入"}</button>
+            <button type="button" onClick={() => setIsImportPanelOpen(true)}>导入歌单</button>
           </div>
-          <textarea value={playlistText} onChange={(event) => setPlaylistText(event.target.value)} spellCheck="false" />
           <pre>{profileText}</pre>
         </div>
 
@@ -857,14 +880,28 @@ function App() {
                 ×
               </button>
             </div>
-            <textarea
-              value={playlistText}
-              onChange={(event) => setPlaylistText(event.target.value)}
-              spellCheck="false"
-              placeholder={"每行一首，例如：\n遇见 - 孙燕姿\n十年 - 陈奕迅"}
-            />
+            <div className="importSwitch" role="tablist" aria-label="歌单导入方式">
+              <button type="button" className={importMode === "link" ? "active" : ""} onClick={() => setImportMode("link")}>链接</button>
+              <button type="button" className={importMode === "screenshot" ? "active" : ""} onClick={() => setImportMode("screenshot")}>截图</button>
+            </div>
+            {importMode === "link" ? (
+              <label className="importField">
+                <span>歌单链接</span>
+                <input
+                  value={playlistUrl}
+                  onChange={(event) => setPlaylistUrl(event.target.value)}
+                  placeholder="粘贴网易云歌单链接，例如 https://music.163.com/#/playlist?id=..."
+                />
+              </label>
+            ) : (
+              <label className="screenshotDrop">
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handlePlaylistImageChange} />
+                <span>{playlistImageName || "上传歌单截图"}</span>
+                <small>截图里需要同时看到歌名和歌手名</small>
+              </label>
+            )}
             <div className="modalActions">
-              <button type="button" onClick={() => setPlaylistText(samplePlaylist)}>填入示例</button>
+              <button type="button" onClick={() => setIsImportPanelOpen(false)}>取消</button>
               <button type="button" className="primaryAction" onClick={importPlaylist} disabled={isImporting}>
                 {isImporting ? "导入中" : "导入并重排"}
               </button>
