@@ -10,6 +10,7 @@
     "dev:music": "PORT=3300 node /Users/wzy/Desktop/CodeX-20260303/近期项目合集/2026-04-27-Ai电台/个人电台/services/netease-runner/node_modules/NeteaseCloudMusicApi/app.js",
     "start": "node server/index.js",
     "graph:build": "node scripts/build-song-graph.js",
+    "graph:lite": "node scripts/build-lite-song-graph.js",
     "build": "vite build",
     "validate": "npm run graph:build && npm run build"
   },
