@@ -58,3 +58,14 @@ Playable music is resolved at runtime. By default the backend uses the bundled
 `NeteaseCloudMusicApi` package internally, so a single Railway service is enough
 for the MVP. If you deploy a separate music API, set `MUSIC_API_BASE` to that
 service URL.
+
+Optional LLM DJ talk generation:
+
+```bash
+LLM_API_KEY=your-model-api-key
+LLM_MODEL=your-chat-model
+LLM_API_BASE=https://api.openai.com/v1
+```
+
+When these are not configured, the backend falls back to Claudio's rule-based
+talk script generator.

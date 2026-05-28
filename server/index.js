@@ -11,6 +11,7 @@ import { importPlaylistText, loadGraph, loadProfile, recommend, recordFeedback, 
 import { resolvePlayableTrack } from "./music.js";
 import { loadPlayableIndex, storePlayableRecord } from "./playable-index.js";
 import { buildRadioProgram } from "./radio-program.js";
+import { isLlmConfigured } from "./llm.js";
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -49,7 +50,7 @@ app.options("*", (_req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, graph: graphBootstrap });
+  res.json({ ok: true, graph: graphBootstrap, llm: { configured: isLlmConfigured() } });
 });
 
 app.get("/api/audio", async (req, res) => {

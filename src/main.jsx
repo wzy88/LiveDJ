@@ -32,6 +32,7 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isNarrating, setIsNarrating] = useState(false);
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [musicVolume, setMusicVolume] = useState(0.88);
   const [djLine, setDjLine] = useState("把你的想法丢给我，我来接歌。");
   const [dialogueMessages, setDialogueMessages] = useState([
@@ -114,20 +115,35 @@ function App() {
   }
 
   async function importPlaylist() {
+    const text = playlistText.trim();
+    if (!text) {
+      setStatus("先粘贴歌单内容，再导入。");
+      return;
+    }
+    setIsImporting(true);
     setStatus("正在把你的歌单映射到歌曲图谱...");
-    const result = await fetchJson("/api/profile/import", {
-      method: "POST",
-      body: JSON.stringify({ text: playlistText })
-    });
-    setProfile(result);
-    setStatus(`导入 ${result.importedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
-    await loadRecommendations();
+    try {
+      const result = await fetchJson("/api/profile/import", {
+        method: "POST",
+        body: JSON.stringify({ text })
+      });
+      setProfile(result);
+      appendDialogueMessage("user", `导入了 ${result.importedCount} 首歌`);
+      appendDialogueMessage("dj", `我读到了 ${result.importedCount} 首，匹配到 ${result.matchedCount} 首。现在按你的歌单重排。`);
+      setStatus(`导入 ${result.importedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
+      await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
+    } catch (error) {
+      setStatus(`歌单导入失败：${error.message}`);
+      appendDialogueMessage("dj", `歌单导入失败：${error.message}`);
+    } finally {
+      setIsImporting(false);
+    }
   }
 
   async function loadRecommendations(queryOverride = query, options = {}) {
     const effectiveQuery = String(queryOverride || "").trim();
     if (!programPromiseRef.current) {
-      programPromiseRef.current = fetchJson(`/api/program?q=${encodeURIComponent(effectiveQuery)}&limit=10&wait=2200`).finally(() => {
+      programPromiseRef.current = fetchJson(`/api/program?q=${encodeURIComponent(effectiveQuery)}&limit=10&wait=6500`).finally(() => {
         programPromiseRef.current = null;
       });
     }
@@ -149,7 +165,7 @@ function App() {
         }
         prewarmScriptAudio(nextQueue);
       }
-      setStatus(`可播队列已生成：${nextQueue.length} 首可直接播放，后台继续补齐队列。`);
+      setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放，后台继续补齐队列。` : "这次候选都没有通过可播验证，正在后台继续补。");
       if (nextQueue.length < 8) {
         fillQueueInBackground(effectiveQuery, nextQueue.length);
       }
@@ -234,7 +250,7 @@ function App() {
         await audioRef.current.play();
         setIsPlaying(true);
       } catch (error) {
-        setStatus(`播放被浏览器拦住了：${error.message}`);
+        setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
       }
     }
     await sendFeedback(track.id, "played", false);
@@ -276,7 +292,7 @@ function App() {
         await audioRef.current.play();
         setIsPlaying(true);
       } catch (error) {
-        setStatus(`播放被浏览器拦住了：${error.message}`);
+        setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
         setIsPlaying(false);
         return;
       }
@@ -563,8 +579,8 @@ function App() {
     setQuery(nextQuery);
     latestQueryRef.current = nextQuery;
     appendDialogueMessage("user", nextQuery);
-    appendDialogueMessage("dj", "收到，我按这句重新调一段。");
-    setDjLine("收到，我按这句重新调一段。");
+    appendDialogueMessage("dj", "我正在看你的歌单画像和这次的状态，马上接一段能播的。");
+    setDjLine("我正在看你的歌单画像和这次的状态，马上接一段能播的。");
     setPromptText("");
     await loadRecommendations(nextQuery, { appendDjResponse: true });
   }
@@ -590,10 +606,12 @@ function App() {
     if (!isPlaying) {
       if (audioRef.current && activeTrack.id === queueRef.current[currentIndex]?.id) {
         audioRef.current.muted = false;
-        await audioRef.current.play().catch(async () => {
+        try {
+          await audioRef.current.play();
+          setIsPlaying(true);
+        } catch {
           await playSelectedTrack(activeTrack);
-        });
-        setIsPlaying(true);
+        }
         return;
       }
       await playSelectedTrack(activeTrack);
@@ -751,7 +769,7 @@ function App() {
                   className={activeTrack?.id === track.id ? "queueRow active" : "queueRow"}
                   key={track.id}
                   type="button"
-                  onClick={() => setActiveTrack(track)}
+                  onClick={() => playTrackAtIndex(index, recommendations)}
                 >
                   <span className="queueIndex">{String(index + 1).padStart(2, "0")}</span>
                   <span className="queueBody">
@@ -775,7 +793,7 @@ function App() {
         <div className="module">
           <div className="moduleHead">
             <h2>用户歌单</h2>
-            <button type="button" onClick={importPlaylist}>导入</button>
+            <button type="button" onClick={importPlaylist} disabled={isImporting}>{isImporting ? "导入中" : "导入"}</button>
           </div>
           <textarea value={playlistText} onChange={(event) => setPlaylistText(event.target.value)} spellCheck="false" />
           <pre>{profileText}</pre>

@@ -1,6 +1,7 @@
 import { loadProfile, recommend } from "./recommender.js";
 import { resolvePlayableTrack } from "./music.js";
 import { getCleanPlayableRecord } from "./playable-index.js";
+import { generateTalkScriptWithLlm } from "./llm.js";
 
 export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 } = {}) {
   const profile = loadProfile();
@@ -43,6 +44,8 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
     rejected.push({ id: track.id, title: track.title, artist: track.artist });
   }
 
+  await enrichQueueScripts(queue, { query, profile, anchors: raw.anchors || [] });
+
   return {
     query,
     rawCount: (raw.recommendations || []).length,
@@ -54,15 +57,30 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
 }
 
 function pushPlayable(queue, track, resolvedTrack, context) {
+  const queueIndex = queue.length;
   queue.push({
     ...track,
     playable: true,
     resolvedTrack,
     script: buildTalkScript(track, {
       ...context,
-      queueIndex: queue.length
-    })
+      queueIndex
+    }),
+    scriptSource: "rules"
   });
+}
+
+async function enrichQueueScripts(queue, context) {
+  await Promise.all(queue.slice(0, 4).map(async (track, index) => {
+    const script = await generateTalkScriptWithLlm({
+      track,
+      context: { ...context, queueIndex: index },
+      fallbackScript: track.script
+    });
+    if (!script) return;
+    track.script = script;
+    track.scriptSource = "llm";
+  }));
 }
 
 async function resolveWithTimeout(track, timeoutMs) {
