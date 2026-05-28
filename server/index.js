@@ -358,6 +358,7 @@ async function ensureRuntimeData() {
     updatedAt: new Date().toISOString()
   };
   console.log(`Downloaded song graph to ${graphPath}`);
+  await warmGraphCache();
 }
 
 async function warmGraphCache() {
