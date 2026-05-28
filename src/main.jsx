@@ -158,7 +158,9 @@ function App() {
       setAnchors(result.anchors || []);
       setProfile(result.profile || profile);
       if (nextQueue[0]) {
+        setCurrentIndex(0);
         setActiveTrack(nextQueue[0]);
+        setResolvedTrack(nextQueue[0].resolvedTrack || null);
         setDjLine(nextQueue[0].script?.opening || "新的电台队列已经排好。");
         if (options.appendDjResponse) {
           appendDialogueMessage("dj", nextQueue[0].script?.opening || "我按这句话重新排好了。");
@@ -275,6 +277,7 @@ function App() {
       setStatus("这首还没有准备好可播音源。");
       return;
     }
+    primeAudioElement();
     stopSpeechAndTimers();
     setCurrentIndex(safeIndex);
     setActiveTrack(track);
@@ -604,14 +607,9 @@ function App() {
       return;
     }
     if (!isPlaying) {
-      if (audioRef.current && activeTrack.id === queueRef.current[currentIndex]?.id) {
-        audioRef.current.muted = false;
-        try {
-          await audioRef.current.play();
-          setIsPlaying(true);
-        } catch {
-          await playSelectedTrack(activeTrack);
-        }
+      const activeIndex = queueRef.current.findIndex((track) => track.id === activeTrack.id);
+      if (activeTrack.resolvedTrack && activeIndex >= 0) {
+        await playTrackAtIndex(activeIndex, queueRef.current);
         return;
       }
       await playSelectedTrack(activeTrack);
