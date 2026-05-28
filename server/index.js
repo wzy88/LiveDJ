@@ -20,6 +20,11 @@ const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const graphPath = path.join(rootDir, "data", "song-graph.json");
 const ttsCache = new Map();
+let graphBootstrap = {
+  state: fs.existsSync(graphPath) ? "ready" : "missing",
+  message: fs.existsSync(graphPath) ? "song graph is available" : "song graph is not loaded yet",
+  updatedAt: new Date().toISOString()
+};
 const allowedOrigins = new Set(
   [
     "http://127.0.0.1:5173",
@@ -44,7 +49,7 @@ app.options("*", (_req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, graph: graphBootstrap });
 });
 
 app.get("/api/audio", async (req, res) => {
@@ -284,23 +289,51 @@ function cleanSpeechText(value = "") {
     .slice(0, 220);
 }
 
-await ensureRuntimeData();
-
 app.listen(port, host, () => {
   console.log(`Claudio Core listening at http://${host}:${port}`);
+  ensureRuntimeData().catch((error) => {
+    graphBootstrap = {
+      state: "error",
+      message: error.message,
+      updatedAt: new Date().toISOString()
+    };
+    console.warn(`song graph bootstrap failed: ${error.message}`);
+  });
 });
 
 async function ensureRuntimeData() {
-  if (fs.existsSync(graphPath)) return;
-  const sourceUrl = cleanText(process.env.SONG_GRAPH_URL || "");
-  if (!sourceUrl) {
-    console.warn("song-graph.json is missing and SONG_GRAPH_URL is not configured.");
+  if (fs.existsSync(graphPath)) {
+    graphBootstrap = {
+      state: "ready",
+      message: "song graph is available",
+      updatedAt: new Date().toISOString()
+    };
     return;
   }
+  const sourceUrl = cleanText(process.env.SONG_GRAPH_URL || "");
+  if (!sourceUrl) {
+    graphBootstrap = {
+      state: "missing",
+      message: "song-graph.json is missing and SONG_GRAPH_URL is not configured",
+      updatedAt: new Date().toISOString()
+    };
+    console.warn(graphBootstrap.message);
+    return;
+  }
+  graphBootstrap = {
+    state: "downloading",
+    message: "downloading song graph",
+    updatedAt: new Date().toISOString()
+  };
   console.log("Downloading song graph from SONG_GRAPH_URL...");
   const response = await fetch(sourceUrl);
   if (!response.ok) {
-    console.warn(`Failed to download song graph: ${response.status} ${response.statusText}`);
+    graphBootstrap = {
+      state: "error",
+      message: `failed to download song graph: ${response.status} ${response.statusText}`,
+      updatedAt: new Date().toISOString()
+    };
+    console.warn(graphBootstrap.message);
     return;
   }
   const bytes = Buffer.from(await response.arrayBuffer());
@@ -309,5 +342,10 @@ async function ensureRuntimeData() {
     : bytes;
   await fsp.mkdir(path.dirname(graphPath), { recursive: true });
   await fsp.writeFile(graphPath, payload);
+  graphBootstrap = {
+    state: "ready",
+    message: "song graph downloaded",
+    updatedAt: new Date().toISOString()
+  };
   console.log(`Downloaded song graph to ${graphPath}`);
 }
