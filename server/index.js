@@ -299,6 +299,16 @@ app.listen(port, host, () => {
     };
     console.warn(`song graph bootstrap failed: ${error.message}`);
   });
+  setTimeout(() => {
+    warmGraphCache().catch((error) => {
+      graphBootstrap = {
+        state: "error",
+        message: error.message,
+        updatedAt: new Date().toISOString()
+      };
+      console.warn(`song graph warmup failed: ${error.message}`);
+    });
+  }, 0);
 });
 
 async function ensureRuntimeData() {
@@ -348,4 +358,19 @@ async function ensureRuntimeData() {
     updatedAt: new Date().toISOString()
   };
   console.log(`Downloaded song graph to ${graphPath}`);
+}
+
+async function warmGraphCache() {
+  if (!fs.existsSync(graphPath)) return;
+  graphBootstrap = {
+    state: "loading",
+    message: "warming song graph cache",
+    updatedAt: new Date().toISOString()
+  };
+  const graph = loadGraph();
+  graphBootstrap = {
+    state: "ready",
+    message: `song graph ready (${graph.songCount.toLocaleString()} songs)`,
+    updatedAt: new Date().toISOString()
+  };
 }
