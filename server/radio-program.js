@@ -45,6 +45,7 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
   }
 
   await enrichQueueScripts(queue, { query, profile, anchors: raw.anchors || [] });
+  attachProgramFlow(queue, { query, profile, anchors: raw.anchors || [] });
 
   return {
     query,
@@ -74,13 +75,99 @@ async function enrichQueueScripts(queue, context) {
   await Promise.all(queue.slice(0, 4).map(async (track, index) => {
     const script = await generateTalkScriptWithLlm({
       track,
-      context: { ...context, queueIndex: index },
+      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null },
       fallbackScript: track.script
     });
     if (!script) return;
     track.script = script;
     track.scriptSource = "llm";
   }));
+}
+
+function attachProgramFlow(queue, context) {
+  queue.forEach((track, index) => {
+    const script = normalizeTalkScript(track.script);
+    const nextTrack = queue[index + 1] || null;
+    const nextTease = script.nextTease || buildNextTease(track, nextTrack, {
+      ...context,
+      queueIndex: index
+    });
+    const closing = script.closing || buildClosing(track, nextTrack, context);
+    const stages = buildTalkStages({
+      ...script,
+      nextTease,
+      closing
+    }, track);
+
+    track.script = {
+      ...script,
+      nextTease,
+      closing,
+      stages,
+      lines: stages.map((stage) => stage.text).filter(Boolean)
+    };
+  });
+}
+
+function normalizeTalkScript(script = {}) {
+  const opening = cleanText(script.opening || "");
+  const bridges = (Array.isArray(script.bridges) ? script.bridges : [])
+    .map((line) => cleanText(line))
+    .filter(Boolean)
+    .slice(0, 2);
+  return {
+    opening,
+    bridges,
+    nextTease: cleanText(script.nextTease || ""),
+    closing: cleanText(script.closing || "")
+  };
+}
+
+function buildTalkStages(script, track) {
+  const bridges = script.bridges || [];
+  return [
+    {
+      id: `${track.id}:intro`,
+      type: "intro",
+      label: "口播 1/3",
+      text: script.opening,
+      position: "start",
+      offsetMs: 1400,
+      musicVolume: 0.22
+    },
+    {
+      id: `${track.id}:bridge-a`,
+      type: "bridge",
+      label: "口播 2/3",
+      text: bridges[0],
+      position: "percent",
+      percent: 0.31,
+      minMs: 26000,
+      maxBeforeEndMs: 65000,
+      musicVolume: 0.2
+    },
+    {
+      id: `${track.id}:bridge-b`,
+      type: "bridge",
+      label: "口播 3/3",
+      text: bridges[1],
+      position: "percent",
+      percent: 0.64,
+      minMs: 62000,
+      maxBeforeEndMs: 26000,
+      musicVolume: 0.2
+    },
+    {
+      id: `${track.id}:next-tease`,
+      type: "next",
+      label: "下一首串联",
+      text: script.nextTease,
+      position: "beforeEnd",
+      beforeEndMs: 15000,
+      minMs: 90000,
+      musicVolume: 0.18
+    }
+  ].filter((stage) => stage.text);
 }
 
 async function resolveWithTimeout(track, timeoutMs) {
@@ -215,6 +302,44 @@ function buildBridgeTwoOptions(frame, archetype) {
   ];
 }
 
+function buildNextTease(track, nextTrack, context = {}) {
+  if (!nextTrack) {
+    return chooseLine([
+      `这首后半段就不打扰太多了。等它自己收住，我再按你刚才的状态往下接。`,
+      `后面先不急着换话题，让这首歌把气口留完整。下一段我会继续顺着这个夜晚往下排。`,
+      `听到这里，我们把解释放少一点。等这首走完，电台会继续往前，不让空气突然断掉。`
+    ], `${track.id}:final-tease`, context.query || "");
+  }
+
+  const nextFrame = buildSongFrame(nextTrack, cleanText(context.query || ""));
+  const relation = pickRelation(track, nextTrack);
+  return chooseLine([
+    `等这首再往后走一点，我们会从${relation}里转出去。下一首是《${nextTrack.title}》，它会把${nextFrame.mood}那面接得更轻。`,
+    `这段不用硬收尾。待会儿接到《${nextTrack.title}》的时候，情绪会从${relation}慢慢换一口气。`,
+    `如果刚才像把白天放慢，那下一首《${nextTrack.title}》会负责把路继续铺开一点。我们不突然切换，只顺着走。`,
+    `后面会接《${nextTrack.title}》。不是为了换热闹，是让这段${nextFrame.scene || "夜里"}的气氛多一个角度。`
+  ], `${track.id}:next:${nextTrack.id}`, context.query || "");
+}
+
+function buildClosing(track, nextTrack, context = {}) {
+  if (nextTrack) return `从《${track.title}》到《${nextTrack.title}》，我们让情绪自然换挡。`;
+  return chooseLine([
+    "这一段到这里就够了，别把话说满，留一点余味给后面的歌。",
+    "剩下的路让音乐自己走，Claudio 会继续在旁边。",
+    "今晚不用一次想清楚，听完这一首，再慢慢往下走。"
+  ], `${track.id}:closing`, context.query || "");
+}
+
+function pickRelation(track, nextTrack) {
+  const sharedMood = firstSharedValue(track.moods, nextTrack.moods);
+  if (sharedMood) return `${sharedMood}的情绪`;
+  const sharedScene = firstSharedValue(track.scenes, nextTrack.scenes);
+  if (sharedScene) return `${sharedScene}的场景`;
+  const sharedGenre = firstSharedValue(track.genres, nextTrack.genres);
+  if (sharedGenre) return `${sharedGenre}的质感`;
+  return "刚才这口气";
+}
+
 function buildSlotCue(query, queueIndex) {
   if (queueIndex <= 0) return buildQueryLine(query);
   return chooseLine([
@@ -338,6 +463,11 @@ function firstValue(items = []) {
 
 function nthValue(items = [], index) {
   return items[index]?.value || "";
+}
+
+function firstSharedValue(left = [], right = []) {
+  const rightValues = new Set((right || []).map((item) => item.value).filter(Boolean));
+  return (left || []).find((item) => rightValues.has(item.value))?.value || "";
 }
 
 function pickBySeed(items = [], seedText = "") {

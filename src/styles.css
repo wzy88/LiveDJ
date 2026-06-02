@@ -177,6 +177,23 @@ h3 {
   box-shadow: 0 12px 30px rgba(74, 224, 182, 0.16);
 }
 
+.llmStatusButton {
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(244, 241, 234, 0.82);
+  font-size: 12px;
+  font-weight: 800;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.llmStatusButton.connected {
+  background: rgba(126, 231, 199, 0.13);
+  color: #7ee7c7;
+  border-color: rgba(126, 231, 199, 0.3);
+}
+
 .tasteSummary {
   margin: 10px 0 0;
   color: rgba(244, 241, 234, 0.62);
@@ -330,6 +347,52 @@ h3 {
   accent-color: #4ae0b6;
 }
 
+.liveDjPanel {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(74, 224, 182, 0.08);
+  border: 1px solid rgba(74, 224, 182, 0.18);
+}
+
+.liveDjCopy {
+  min-width: 0;
+}
+
+.liveDjCopy p:last-child {
+  margin: 0;
+  color: #f6f2ea;
+  line-height: 1.62;
+  overflow-wrap: anywhere;
+}
+
+.talkControls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.talkControls button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(244, 241, 234, 0.84);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.talkControls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .handwrittenBlock {
   min-width: 0;
   display: grid;
@@ -359,93 +422,132 @@ h3 {
 
 .dialoguePanel {
   display: grid;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 12px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.djRow {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.djAvatar {
-  width: 38px;
-  height: 38px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(180deg, #4ae0b6, #1f8f72);
-  color: #07110d;
-  font-weight: 800;
-}
-
-.bubble {
-  min-width: 0;
-  max-width: 100%;
-  border-radius: 16px;
-  padding: 12px 14px;
-  background: rgba(255, 255, 255, 0.05);
+  background:
+    linear-gradient(180deg, rgba(20, 20, 24, 0.82), rgba(12, 12, 15, 0.9));
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .dialogueStack {
   min-width: 0;
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  max-height: 330px;
+  overflow: auto;
+  padding: 2px 4px 4px;
+  scroll-behavior: smooth;
 }
 
-.userBubble {
-  justify-self: end;
-  width: min(86%, 720px);
-  background: rgba(74, 224, 182, 0.12);
-  border-color: rgba(74, 224, 182, 0.26);
+.messageRow {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
 }
 
-.userBubble .bubbleName {
-  color: rgba(87, 232, 195, 0.76);
+.userMessageRow {
+  justify-content: flex-end;
 }
 
-.bubbleName {
-  margin-bottom: 6px;
-  color: rgba(244, 241, 234, 0.58);
-  font-size: 11px;
-  letter-spacing: 0;
-  text-transform: uppercase;
+.messageAvatar {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, #47d7ad, #1f9778);
+  color: #06110d;
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 8px 18px rgba(18, 191, 142, 0.14);
 }
 
-.bubble p:last-child {
-  margin-bottom: 0;
-  line-height: 1.6;
-  color: #f6f2ea;
+.userAvatar {
+  background: rgba(244, 241, 234, 0.9);
+  color: #171717;
+  box-shadow: none;
+}
+
+.messageBubble {
+  position: relative;
+  min-width: 0;
+  max-width: min(68%, 560px);
+  border-radius: 4px 14px 14px 14px;
+  padding: 10px 12px;
+  background: rgba(244, 241, 234, 0.92);
+  color: #151515;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.2);
+}
+
+.messageBubble::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: -6px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-right: 6px solid rgba(244, 241, 234, 0.92);
+}
+
+.userMessageBubble {
+  border-radius: 14px 4px 14px 14px;
+  background: #7ee7c7;
+  color: #07120e;
+}
+
+.userMessageBubble::before {
+  left: auto;
+  right: -6px;
+  border-right: 0;
+  border-left: 6px solid #7ee7c7;
+}
+
+.messageBubble p {
+  margin: 0;
+  line-height: 1.55;
+  font-size: 14px;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 
 .promptRow {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 54px;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  align-items: center;
+  padding: 7px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
 }
 
 .promptRow input {
   min-width: 0;
-  min-height: 48px;
-  border-radius: 14px;
-  padding: 0 14px;
+  min-height: 38px;
+  border-radius: 10px;
+  padding: 0 12px;
+  background: rgba(244, 241, 234, 0.94);
+  color: #151515;
+  border: 0;
+}
+
+.promptRow input::placeholder {
+  color: rgba(20, 20, 20, 0.4);
 }
 
 .promptRow button {
-  min-height: 48px;
-  border-radius: 14px;
-  background: #f0efe9;
-  color: #131313;
-  font-size: 20px;
+  width: 38px;
+  min-height: 38px;
+  border-radius: 10px;
+  background: #31c99f;
+  color: #04110d;
+  font-size: 19px;
+  font-weight: 800;
 }
 
 .footerBar {
@@ -702,6 +804,37 @@ h3 {
   margin: 14px 0 0;
 }
 
+.llmModal {
+  width: min(560px, 100%);
+}
+
+.llmCurrentState {
+  display: grid;
+  gap: 5px;
+  margin: 16px 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(126, 231, 199, 0.08);
+  border: 1px solid rgba(126, 231, 199, 0.16);
+}
+
+.llmCurrentState span {
+  color: rgba(126, 231, 199, 0.74);
+  font-size: 12px;
+}
+
+.llmCurrentState strong {
+  color: #f6f2ea;
+  font-size: 14px;
+}
+
+.configHint {
+  margin: 12px 0 0;
+  color: rgba(244, 241, 234, 0.5);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 audio[hidden] {
   display: none;
 }
@@ -751,16 +884,6 @@ audio[hidden] {
     align-self: flex-start;
     width: 100%;
     max-width: calc(100vw - 96px);
-  }
-
-  .djRow {
-    grid-template-columns: 34px minmax(0, 1fr);
-    gap: 10px;
-  }
-
-  .djAvatar {
-    width: 34px;
-    height: 34px;
   }
 
   .deviceTop,
@@ -822,6 +945,21 @@ audio[hidden] {
   }
 
   .promptRow {
-    grid-template-columns: 1fr 52px;
+    grid-template-columns: 1fr 42px;
+  }
+
+  .dialogueStack {
+    max-height: 360px;
+  }
+
+  .messageBubble {
+    max-width: min(76%, 220px);
+  }
+
+  .messageAvatar {
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    font-size: 13px;
   }
 }

@@ -68,6 +68,16 @@ LLM_VISION_MODEL=your-vision-model
 LLM_API_BASE=https://api.openai.com/v1
 ```
 
+DeepSeek can be configured directly:
+
+```bash
+DEEPSEEK_API_KEY=your-deepseek-api-key
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_API_BASE=https://api.deepseek.com
+```
+
+The backend automatically loads `.env` and `.env.local` in development.
+
 When these are not configured, the backend falls back to Claudio's rule-based
 talk script generator. Screenshot playlist import needs a vision-capable model;
 playlist links do not.

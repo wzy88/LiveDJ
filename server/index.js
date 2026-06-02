@@ -7,11 +7,13 @@ import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { EdgeTTS } from "edge-tts-universal";
+import "./env.js";
+import { saveLocalEnv } from "./env.js";
 import { importPlaylistText, importPlaylistTracks, loadGraph, loadProfile, recommend, recordFeedback, summarizeProfile } from "./recommender.js";
 import { resolvePlayableTrack } from "./music.js";
 import { loadPlayableIndex, storePlayableRecord } from "./playable-index.js";
 import { buildRadioProgram } from "./radio-program.js";
-import { extractTracksFromPlaylistScreenshot, isLlmConfigured } from "./llm.js";
+import { extractTracksFromPlaylistScreenshot, generateDialogueReplyWithLlm, getLlmStatus } from "./llm.js";
 import { tracksFromPlaylistUrl } from "./playlist-import.js";
 
 const app = express();
@@ -51,7 +53,34 @@ app.options("*", (_req, res) => {
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, graph: graphBootstrap, llm: { configured: isLlmConfigured() } });
+  res.json({ ok: true, graph: graphBootstrap, llm: getLlmStatus() });
+});
+
+app.post("/api/llm/config", (req, res) => {
+  try {
+    const apiKey = cleanText(req.body?.apiKey || req.body?.deepseekApiKey || "");
+    const model = cleanText(req.body?.model || "deepseek-chat");
+    const apiBase = cleanText(req.body?.apiBase || "https://api.deepseek.com");
+    if (!apiKey || apiKey.length < 12) {
+      res.status(400).json({ error: "DeepSeek API Key 不能为空。" });
+      return;
+    }
+    if (!/^https?:\/\//i.test(apiBase)) {
+      res.status(400).json({ error: "API Base 必须是 http 或 https 地址。" });
+      return;
+    }
+    saveLocalEnv({
+      LLM_PROVIDER: "deepseek",
+      DEEPSEEK_API_KEY: apiKey,
+      DEEPSEEK_MODEL: model || "deepseek-chat",
+      DEEPSEEK_API_BASE: apiBase,
+      LLM_MODEL: model || "deepseek-chat",
+      LLM_API_BASE: apiBase
+    });
+    res.json({ llm: getLlmStatus() });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 app.get("/api/audio", async (req, res) => {
@@ -232,6 +261,29 @@ app.get("/api/program", async (req, res) => {
     const maxWaitMs = Number.isFinite(requestedWait) ? Math.min(8000, Math.max(0, requestedWait)) : 0;
     const program = await buildRadioProgram({ query, limit, maxWaitMs });
     res.json(program);
+  } catch (error) {
+    res.status(503).json({ error: error.message });
+  }
+});
+
+app.post("/api/dialogue", async (req, res) => {
+  try {
+    const profile = loadProfile();
+    const summary = (() => {
+      try {
+        return summarizeProfile(profile, loadGraph());
+      } catch {
+        return profile;
+      }
+    })();
+    const reply = await generateDialogueReplyWithLlm({
+      message: req.body?.message || "",
+      query: req.body?.query || "",
+      profile: { ...profile, ...summary },
+      activeTrack: req.body?.activeTrack || null,
+      queue: Array.isArray(req.body?.queue) ? req.body.queue : []
+    });
+    res.json(reply);
   } catch (error) {
     res.status(503).json({ error: error.message });
   }

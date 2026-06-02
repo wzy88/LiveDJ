@@ -24,8 +24,15 @@ function App() {
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
+  const [isLlmPanelOpen, setIsLlmPanelOpen] = useState(false);
+  const [isSavingLlm, setIsSavingLlm] = useState(false);
+  const [llmStatus, setLlmStatus] = useState(null);
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmModel, setLlmModel] = useState("deepseek-chat");
+  const [llmApiBase, setLlmApiBase] = useState("https://api.deepseek.com");
   const [musicVolume, setMusicVolume] = useState(0.88);
   const [djLine, setDjLine] = useState("把你的想法丢给我，我来接歌。");
+  const [currentTalkSegment, setCurrentTalkSegment] = useState(null);
   const [dialogueMessages, setDialogueMessages] = useState([
     { id: "dj-initial", role: "dj", text: "把你的想法丢给我，我来接歌。" }
   ]);
@@ -41,6 +48,7 @@ function App() {
   const speechSeqRef = useRef(0);
   const latestQueryRef = useRef(query);
   const activeTrackRef = useRef(activeTrack);
+  const dialogueEndRef = useRef(null);
 
   useEffect(() => {
     refreshAll();
@@ -57,6 +65,10 @@ function App() {
   useEffect(() => {
     activeTrackRef.current = activeTrack;
   }, [activeTrack]);
+
+  useEffect(() => {
+    dialogueEndRef.current?.scrollIntoView({ block: "end" });
+  }, [dialogueMessages]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 15000);
@@ -82,19 +94,22 @@ function App() {
 
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.volume = isNarrating ? Math.min(musicVolume, 0.24) : musicVolume;
+      const duckVolume = currentTalkSegment?.musicVolume ?? 0.24;
+      audioRef.current.volume = isNarrating ? Math.min(musicVolume, duckVolume) : musicVolume;
     }
-  }, [isNarrating, musicVolume]);
+  }, [currentTalkSegment, isNarrating, musicVolume]);
 
   useEffect(() => {
     return () => stopSpeechAndTimers();
   }, []);
 
   async function refreshAll() {
-    const [stats, profileResult] = await Promise.all([
+    const [health, stats, profileResult] = await Promise.all([
+      fetchJson("/api/health").catch(() => null),
       fetchJson("/api/graph/stats").catch((error) => ({ error: error.message })),
       fetchJson("/api/profile").catch(() => null)
     ]);
+    setLlmStatus(health?.llm || null);
     setGraphStats(stats);
     setProfile(profileResult);
     if (stats?.error) {
@@ -124,6 +139,30 @@ function App() {
       appendDialogueMessage("dj", `歌单导入失败：${error.message}`);
     } finally {
       setIsImporting(false);
+    }
+  }
+
+  async function saveLlmConfig() {
+    setIsSavingLlm(true);
+    setStatus("正在保存 DeepSeek 配置...");
+    try {
+      const result = await fetchJson("/api/llm/config", {
+        method: "POST",
+        body: JSON.stringify({
+          apiKey: llmApiKey,
+          model: llmModel,
+          apiBase: llmApiBase
+        })
+      });
+      setLlmStatus(result.llm);
+      setLlmApiKey("");
+      setIsLlmPanelOpen(false);
+      setStatus(result.llm?.configured ? `DeepSeek 已连接：${result.llm.model}` : "DeepSeek 配置未生效。");
+      appendDialogueMessage("dj", "DeepSeek 已经接上了。之后我的闲聊和口播会优先走模型，不再靠本地模板硬撑。");
+    } catch (error) {
+      setStatus(`DeepSeek 保存失败：${error.message}`);
+    } finally {
+      setIsSavingLlm(false);
     }
   }
 
@@ -251,7 +290,6 @@ function App() {
       audioRef.current.muted = false;
       audioRef.current.volume = musicVolume;
       try {
-        await waitForAudioReady(audioRef.current);
         await audioRef.current.play();
         setIsPlaying(true);
       } catch (error) {
@@ -294,7 +332,6 @@ function App() {
       audioRef.current.muted = false;
       audioRef.current.volume = musicVolume;
       try {
-        await waitForAudioReady(audioRef.current);
         await audioRef.current.play();
         setIsPlaying(true);
       } catch (error) {
@@ -338,6 +375,7 @@ function App() {
       window.speechSynthesis.cancel();
     }
     setIsNarrating(false);
+    setCurrentTalkSegment(null);
   }
 
   function primeAudioElement() {
@@ -389,22 +427,47 @@ function App() {
     const script = track.script;
     if (!script) return;
     const durationMs = Math.max(120000, Math.round((track.resolvedTrack?.durationSec || track.durationSec || 220) * 1000));
-    const points = [
-      1500,
-      Math.min(Math.max(25000, durationMs * 0.3), durationMs - 65000),
-      Math.min(Math.max(65000, durationMs * 0.64), durationMs - 12000)
-    ].filter((value, index, arr) => Number.isFinite(value) && value > 0 && arr.indexOf(value) === index);
-    const lines = [script.opening, ...(script.bridges || [])].filter(Boolean).slice(0, points.length);
-    lines.forEach((line, index) => {
+    const stages = Array.isArray(script.stages) && script.stages.length
+      ? script.stages
+      : buildFallbackTalkStages(script, track);
+    stages.forEach((stage) => {
+      const offset = resolveTalkOffset(stage, durationMs);
+      if (!Number.isFinite(offset) || offset < 0 || offset > durationMs - 2500) return;
       talkTimersRef.current.push(
-        window.setTimeout(() => speakOverMusic(line), Math.max(0, points[index]))
+        window.setTimeout(() => speakOverMusic(stage.text, stage), Math.max(0, offset))
       );
     });
   }
 
-  async function speakOverMusic(text) {
+  function buildFallbackTalkStages(script, track) {
+    return [
+      { id: `${track.id}:intro`, type: "intro", label: "口播 1/3", text: script.opening, position: "start", offsetMs: 1400, musicVolume: 0.22 },
+      { id: `${track.id}:bridge-a`, type: "bridge", label: "口播 2/3", text: script.bridges?.[0], position: "percent", percent: 0.31, minMs: 26000, maxBeforeEndMs: 65000, musicVolume: 0.2 },
+      { id: `${track.id}:bridge-b`, type: "bridge", label: "口播 3/3", text: script.bridges?.[1], position: "percent", percent: 0.64, minMs: 62000, maxBeforeEndMs: 26000, musicVolume: 0.2 },
+      { id: `${track.id}:next-tease`, type: "next", label: "下一首串联", text: script.nextTease, position: "beforeEnd", beforeEndMs: 15000, minMs: 90000, musicVolume: 0.18 }
+    ].filter((stage) => stage.text);
+  }
+
+  function resolveTalkOffset(stage, durationMs) {
+    if (!stage) return null;
+    if (stage.position === "beforeEnd") {
+      const preferred = durationMs - (stage.beforeEndMs || 15000);
+      return Math.max(stage.minMs || 0, preferred);
+    }
+    if (stage.position === "percent") {
+      const byPercent = durationMs * (Number(stage.percent) || 0.35);
+      const min = stage.minMs || 0;
+      const max = durationMs - (stage.maxBeforeEndMs || 20000);
+      return Math.min(Math.max(min, byPercent), max);
+    }
+    return stage.offsetMs || 0;
+  }
+
+  async function speakOverMusic(text, segment = null) {
     if (typeof window === "undefined" || !text) return;
     const token = ++speechSeqRef.current;
+    const nextSegment = segment ? { ...segment, text } : { id: `manual-${token}`, type: "manual", label: "口播", text, musicVolume: 0.22 };
+    setCurrentTalkSegment(nextSegment);
     setDjLine(text);
     setStatus("正在准备口播...");
     try {
@@ -439,11 +502,12 @@ function App() {
       voiceAudio.onplaying = () => {
         if (token !== speechSeqRef.current) return;
         setIsNarrating(true);
-        setStatus("口播中...");
+        setStatus(`${nextSegment.label || "口播"}中...`);
       };
       voiceAudio.onended = () => {
         if (token !== speechSeqRef.current) return;
         setIsNarrating(false);
+        setCurrentTalkSegment(null);
         setStatus("电台继续播放中。");
         if (voiceUrlRef.current) {
           URL.revokeObjectURL(voiceUrlRef.current);
@@ -453,6 +517,7 @@ function App() {
       voiceAudio.onerror = () => {
         if (token !== speechSeqRef.current) return;
         setIsNarrating(false);
+        setCurrentTalkSegment(null);
         setStatus("口播播放失败，已回到音乐。");
       };
       await voiceAudio.play();
@@ -463,11 +528,14 @@ function App() {
         return;
       }
       setIsNarrating(false);
+      setCurrentTalkSegment(null);
       setStatus(`口播失败：${error.message}`);
     }
   }
 
   function playFallbackSpeech(text, token) {
+    const fallbackSegment = currentTalkSegment || { id: `fallback-${token}`, type: "fallback", label: "口播", text, musicVolume: 0.22 };
+    setCurrentTalkSegment(fallbackSegment);
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "zh-CN";
     utterance.rate = 1.0;
@@ -479,16 +547,18 @@ function App() {
     utterance.onstart = () => {
       if (token !== speechSeqRef.current) return;
       setIsNarrating(true);
-      setStatus("口播中...");
+      setStatus(`${fallbackSegment.label || "口播"}中...`);
     };
     utterance.onend = () => {
       if (token !== speechSeqRef.current) return;
       setIsNarrating(false);
+      setCurrentTalkSegment(null);
       setStatus("电台继续播放中。");
     };
     utterance.onerror = () => {
       if (token !== speechSeqRef.current) return;
       setIsNarrating(false);
+      setCurrentTalkSegment(null);
       setStatus("口播播放失败，已回到音乐。");
     };
     window.speechSynthesis.cancel();
@@ -498,9 +568,9 @@ function App() {
   function prewarmScriptAudio(queue) {
     const lines = queue
       .slice(0, 2)
-      .map((track) => track.script?.opening)
+      .flatMap((track) => (track.script?.stages || [{ text: track.script?.opening }]).map((stage) => stage.text))
       .filter(Boolean);
-    for (const line of lines) {
+    for (const line of lines.slice(0, 5)) {
       fetch(`${apiBase}/api/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -515,31 +585,17 @@ function App() {
     }
   }
 
-  function waitForAudioReady(audio) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const cleanup = () => {
-        audio.removeEventListener("canplay", onReady);
-        audio.removeEventListener("loadedmetadata", onReady);
-        audio.removeEventListener("canplaythrough", onReady);
-        clearTimeout(timer);
-      };
-      const onReady = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-      const timer = window.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      }, 7000);
-      audio.addEventListener("canplay", onReady, { once: true });
-      audio.addEventListener("loadedmetadata", onReady, { once: true });
-      audio.addEventListener("canplaythrough", onReady, { once: true });
-    });
+  async function replayCurrentTalk() {
+    const segment = currentTalkSegment || activeTrack?.script?.stages?.[0] || null;
+    const text = segment?.text || djLine;
+    if (!text) return;
+    await speakOverMusic(text, segment || { id: "manual-replay", label: "重说口播", text, musicVolume: 0.22 });
+  }
+
+  function skipCurrentTalk() {
+    if (!isNarrating && !currentTalkSegment) return;
+    stopSpeechAndTimers();
+    setStatus("已跳过当前口播，音乐继续。");
   }
 
   async function sendFeedback(songId, signal, reload = true) {
@@ -555,15 +611,33 @@ function App() {
     event.preventDefault();
     const nextQuery = promptText.trim();
     if (!nextQuery) return;
+    appendDialogueMessage("user", nextQuery);
+    setPromptText("");
+    const dialogue = await fetchJson("/api/dialogue", {
+      method: "POST",
+      body: JSON.stringify({
+        message: nextQuery,
+        query,
+        activeTrack,
+        queue: queueRef.current.slice(0, 8)
+      })
+    }).catch(() => ({
+      intent: /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat",
+      reply: "我在。你这句我收到了。"
+    }));
+    if (dialogue?.reply) {
+      appendDialogueMessage("dj", dialogue.reply);
+      setDjLine(dialogue.reply);
+    }
+    if (dialogue.intent === "chat") {
+      setStatus(dialogue.source === "llm" ? "Claudio 已回复。" : "Claudio 已用本地兜底回复。");
+      return;
+    }
     stopSpeechAndTimers();
     programPromiseRef.current = null;
     deepProgramPromiseRef.current = null;
     setQuery(nextQuery);
     latestQueryRef.current = nextQuery;
-    appendDialogueMessage("user", nextQuery);
-    appendDialogueMessage("dj", "我正在看你的歌单画像和这次的状态，马上接一段能播的。");
-    setDjLine("我正在看你的歌单画像和这次的状态，马上接一段能播的。");
-    setPromptText("");
     await loadRecommendations(nextQuery, { appendDjResponse: true });
   }
 
@@ -642,6 +716,13 @@ function App() {
               <p className="tasteSummary">{tasteSummary}</p>
             </div>
             <div className="topActions">
+              <button
+                type="button"
+                className={llmStatus?.configured ? "llmStatusButton connected" : "llmStatusButton"}
+                onClick={() => setIsLlmPanelOpen(true)}
+              >
+                {llmStatus?.configured ? `DeepSeek · ${llmStatus.model}` : "连接 DeepSeek"}
+              </button>
               <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
                 导入歌单
               </button>
@@ -693,32 +774,48 @@ function App() {
             </div>
           </div>
 
+          <div className="liveDjPanel">
+            <div className="liveDjCopy">
+              <p className="label">{currentTalkSegment?.label || "Live DJ"}</p>
+              <p>{djLine}</p>
+            </div>
+            <div className="talkControls">
+              <button type="button" onClick={replayCurrentTalk} disabled={!djLine}>
+                重说
+              </button>
+              <button type="button" onClick={skipCurrentTalk} disabled={!isNarrating && !currentTalkSegment}>
+                跳过口播
+              </button>
+            </div>
+          </div>
+
           <div className="handwrittenBlock">
             <span className="handwritten">what's next on your mind</span>
             <span className="handwrittenCn">你接下来在想什么</span>
           </div>
 
           <div className="dialoguePanel">
-            <div className="djRow">
-              <div className="djAvatar">C</div>
-              <div className="dialogueStack">
-                {dialogueMessages.map((message) => (
-                  <div className={message.role === "user" ? "bubble userBubble" : "bubble"} key={message.id}>
-                    <p className="bubbleName">{message.role === "user" ? "You" : "Claudio"}</p>
+            <div className="dialogueStack" aria-live="polite">
+              {dialogueMessages.map((message) => (
+                <div className={message.role === "user" ? "messageRow userMessageRow" : "messageRow"} key={message.id}>
+                  {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
+                  <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
                     <p>{message.text}</p>
                   </div>
-                ))}
-              </div>
+                  {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
+                </div>
+              ))}
+              <div ref={dialogueEndRef} />
             </div>
 
             <form className="promptRow" onSubmit={handlePromptSubmit}>
-              <input value={promptText} onChange={(event) => setPromptText(event.target.value)} placeholder={query || "Say something to the DJ..."} />
+              <input value={promptText} onChange={(event) => setPromptText(event.target.value)} placeholder={query || "跟 Claudio 说一句..."} />
               <button type="submit" aria-label="生成队列">→</button>
             </form>
 
             <div className="footerBar">
               <span>CLAUDIO FM</span>
-              <span>{isNarrating ? "TALKING" : isLoadingQueue ? "TUNING" : "CONNECTED"}</span>
+              <span>{isNarrating ? "TALKING" : isLoadingQueue ? "TUNING" : llmStatus?.configured ? "DEEPSEEK" : "RULES"}</span>
             </div>
             <p className="statusLine">{status}</p>
           </div>
@@ -754,7 +851,7 @@ function App() {
                     <small>{track.artist}</small>
                   </span>
                   <span className="queueMeta">
-                    {track.playable ? "READY" : "准备中"}
+                    {track.scriptSource === "llm" ? "DJ" : track.script?.stages?.length ? `${track.script.stages.length} 段` : track.playable ? "READY" : "准备中"}
                   </span>
                 </button>
               ))}
@@ -804,6 +901,51 @@ function App() {
               </button>
             </div>
             <pre>{profileText}</pre>
+          </div>
+        </div>
+      ) : null}
+
+      {isLlmPanelOpen ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="llm-config-title">
+          <div className="playlistModal llmModal">
+            <div className="modalHead">
+              <div>
+                <p className="label">Dialogue Engine</p>
+                <h2 id="llm-config-title">连接 DeepSeek</h2>
+              </div>
+              <button type="button" className="iconButton" onClick={() => setIsLlmPanelOpen(false)} aria-label="关闭 DeepSeek 配置">
+                ×
+              </button>
+            </div>
+            <div className="llmCurrentState">
+              <span>{llmStatus?.configured ? "已连接" : "未连接"}</span>
+              <strong>{llmStatus?.configured ? `${llmStatus.provider} / ${llmStatus.model}` : "当前正在用本地规则兜底"}</strong>
+            </div>
+            <label className="importField">
+              <span>DeepSeek API Key</span>
+              <input
+                value={llmApiKey}
+                onChange={(event) => setLlmApiKey(event.target.value)}
+                placeholder="sk-..."
+                type="password"
+                autoComplete="off"
+              />
+            </label>
+            <label className="importField">
+              <span>模型</span>
+              <input value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="deepseek-chat" />
+            </label>
+            <label className="importField">
+              <span>API Base</span>
+              <input value={llmApiBase} onChange={(event) => setLlmApiBase(event.target.value)} placeholder="https://api.deepseek.com" />
+            </label>
+            <div className="modalActions">
+              <button type="button" onClick={() => setIsLlmPanelOpen(false)}>取消</button>
+              <button type="button" className="primaryAction" onClick={saveLlmConfig} disabled={isSavingLlm}>
+                {isSavingLlm ? "保存中" : "保存并启用"}
+              </button>
+            </div>
+            <p className="configHint">Key 会写入本机 `.env.local`，不会进入 git。</p>
           </div>
         </div>
       ) : null}
