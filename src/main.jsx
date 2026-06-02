@@ -259,12 +259,12 @@ function App() {
 
   async function playSelectedTrack(track = activeTrack) {
     if (!track) return;
-    primeAudioElement();
     const index = queueRef.current.findIndex((item) => item.id === track.id);
     if (track.resolvedTrack && index >= 0) {
       await playTrackAtIndex(index, queueRef.current);
       return;
     }
+    primeAudioElement();
     setActiveTrack(track);
     setResolvedTrack(null);
     setStatus(`正在验证可播音源：${track.title} - ${track.artist}`);
@@ -318,7 +318,6 @@ function App() {
       setStatus("这首还没有准备好可播音源。");
       return;
     }
-    primeAudioElement();
     stopSpeechAndTimers();
     setCurrentIndex(safeIndex);
     setActiveTrack(track);
@@ -327,9 +326,9 @@ function App() {
     setStatus(`正在播放：${track.title} - ${track.artist}`);
     if (audioRef.current) {
       audioRef.current.src = toAudioSource(track.resolvedTrack.streamUrl);
-      audioRef.current.load();
       audioRef.current.loop = false;
       audioRef.current.muted = false;
+      audioRef.current.preload = "auto";
       audioRef.current.volume = musicVolume;
       try {
         await audioRef.current.play();
@@ -858,7 +857,7 @@ function App() {
             </div>
           </div>
 
-          <audio ref={audioRef} onEnded={handleTrackEnded} hidden />
+          <audio ref={audioRef} onEnded={handleTrackEnded} preload="auto" playsInline hidden />
         </div>
       </section>
 
