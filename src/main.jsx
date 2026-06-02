@@ -14,11 +14,8 @@ function App() {
   const [query, setQuery] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
   const [promptText, setPromptText] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
   const [recommendations, setRecommendations] = useState([]);
-  const [rawRecommendations, setRawRecommendations] = useState([]);
-  const [anchors, setAnchors] = useState([]);
   const [activeTrack, setActiveTrack] = useState(null);
   const [resolvedTrack, setResolvedTrack] = useState(null);
-  const [playableMap, setPlayableMap] = useState({});
   const [status, setStatus] = useState("正在读取歌曲图谱...");
   const [currentIndex, setCurrentIndex] = useState(0);
   const [clock, setClock] = useState(Date.now());
@@ -180,8 +177,6 @@ function App() {
       const nextQueue = result.queue || [];
       setRecommendations(nextQueue);
       queueRef.current = nextQueue;
-      setRawRecommendations([]);
-      setAnchors(result.anchors || []);
       setProfile(result.profile || profile);
       if (nextQueue[0]) {
         setCurrentIndex(0);
@@ -214,7 +209,6 @@ function App() {
     if (nextQueue.length <= currentCount) return;
     setRecommendations(nextQueue);
     queueRef.current = nextQueue;
-    setAnchors(result.anchors || []);
     setProfile((current) => result.profile || current);
     if (activeTrackRef.current) {
       const refreshedActive = nextQueue.find((track) => track.id === activeTrackRef.current.id);
@@ -222,23 +216,6 @@ function App() {
     }
     prewarmScriptAudio(nextQueue);
     setStatus(`后台补齐完成：现在有 ${nextQueue.length} 首可播。`);
-  }
-
-  async function loadRawRecommendations() {
-    setStatus("正在读取原始推荐...");
-    const result = await fetchJson(`/api/recommendations?q=${encodeURIComponent(query)}&limit=18`);
-    const next = result.recommendations || [];
-    setRawRecommendations(next);
-    setRecommendations(next);
-    queueRef.current = next;
-    setAnchors(result.anchors || []);
-    setProfile(result.profile || profile);
-    if (next[0]) {
-      setActiveTrack(next[0]);
-      setDjLine(next[0].script?.opening || "原始推荐已载入。");
-    }
-    setStatus(`原始推荐已加载：${next.length} 首。`);
-    return result;
   }
 
   async function playSelectedTrack(track = activeTrack) {
@@ -342,30 +319,6 @@ function App() {
     if (program?.queue?.[0]) {
       await playTrackAtIndex(0, program.queue);
     }
-  }
-
-  async function verifyTopTracks() {
-    const tracks = recommendations.slice(0, 8).map((track) => ({
-      songId: track.id,
-      title: track.title,
-      artist: track.artist,
-      providerIds: track.providerIds || [],
-      durationSec: track.durationSec || null
-    }));
-    if (!tracks.length) return;
-    setStatus("正在预热前 8 首可播缓存...");
-    const result = await fetchJson("/api/playable/verify", {
-      method: "POST",
-      body: JSON.stringify({ tracks })
-    });
-    const nextPlayableMap = {};
-    for (const item of result.results || []) {
-      if (item.songId) nextPlayableMap[item.songId] = item.playable;
-    }
-    setPlayableMap((current) => ({ ...current, ...nextPlayableMap }));
-    const okCount = (result.results || []).filter((item) => item.playable).length;
-    setStatus(`可播预热完成：${okCount}/${tracks.length} 首通过。`);
-    await loadRecommendations();
   }
 
   function stopSpeechAndTimers() {
@@ -674,7 +627,9 @@ function App() {
     ].filter(Boolean).join("\n");
   }, [profile]);
 
-  const currentScriptLines = activeTrack?.script?.lines || [];
+  const tasteSummary = profile?.importedCount
+    ? `已导入 ${profile.importedCount} 首，匹配 ${profile.matchedCount || 0} 首`
+    : "导入歌单后，电台会优先按你的口味接歌";
 
   return (
     <main className="appShell">
@@ -684,16 +639,12 @@ function App() {
             <div>
               <p className="eyebrow">Claudio</p>
               <h1>今晚先听点像人的电台</h1>
+              <p className="tasteSummary">{tasteSummary}</p>
             </div>
             <div className="topActions">
               <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
                 导入歌单
               </button>
-              <div className="statusPills">
-                <span className="pill">LOGIN</span>
-                <span className="pill pillActive">DARK</span>
-                <span className="pill">LIVE</span>
-              </div>
             </div>
           </header>
 
@@ -718,9 +669,8 @@ function App() {
               <h2>{activeTrack?.title || "等待推荐"}</h2>
               <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
               <div className="scoreLine">
-                <span>score {activeTrack?.recommendScore ?? "-"}</span>
-                <span>{resolvedTrack || activeTrack?.playable || playableMap[activeTrack?.id] ? "playable verified" : "not resolved yet"}</span>
-                <span>{isNarrating ? "voice ducking" : isPlaying ? "playing" : "idle"}</span>
+                <span>{resolvedTrack || activeTrack?.playable ? "可播放" : "准备中"}</span>
+                <span>{isNarrating ? "口播中" : isPlaying ? "播放中" : "待播放"}</span>
               </div>
             </div>
             <div className="transport">
@@ -729,7 +679,6 @@ function App() {
                 {isPlaying ? "Ⅱ" : "▶"}
               </button>
               <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
-              <button type="button" onClick={verifyTopTracks} aria-label="预热">■</button>
             </div>
             <div className="volumeRow">
               <span>VOL</span>
@@ -781,8 +730,7 @@ function App() {
                 <h3>接下来要播什么</h3>
               </div>
               <div className="queueActions">
-                <button type="button" onClick={loadRawRecommendations}>原始</button>
-                <button type="button" onClick={loadRecommendations}>推荐</button>
+                <button type="button" onClick={() => loadRecommendations()}>重排</button>
               </div>
             </div>
             <div className="queueList">
@@ -806,68 +754,17 @@ function App() {
                     <small>{track.artist}</small>
                   </span>
                   <span className="queueMeta">
-                    {track.playable || playableMap[track.id] ? "READY" : `${track.providerIds?.length || 0} ID`}
+                    {track.playable ? "READY" : "准备中"}
                   </span>
                 </button>
               ))}
             </div>
-            {rawRecommendations.length ? <p className="rawNotice">当前展示的是可播队列，原始推荐另有 {rawRecommendations.length} 首。</p> : null}
           </div>
 
           <audio ref={audioRef} onEnded={handleTrackEnded} hidden />
         </div>
       </section>
 
-      <aside className="sidePanel">
-        <div className="module">
-          <div className="moduleHead">
-            <h2>用户歌单</h2>
-            <button type="button" onClick={() => setIsImportPanelOpen(true)}>导入歌单</button>
-          </div>
-          <pre>{profileText}</pre>
-        </div>
-
-        <div className="module">
-          <div className="moduleHead">
-            <h2>推荐依据</h2>
-            <button type="button" onClick={() => activeTrack && playSelectedTrack(activeTrack)}>播放当前</button>
-          </div>
-          {activeTrack ? (
-            <>
-              <div className="tagCloud">
-                {activeTrack.scenes?.slice(0, 4).map((tag) => <span key={`s-${tag.value}`}>{tag.value}</span>)}
-                {activeTrack.moods?.slice(0, 4).map((tag) => <span key={`m-${tag.value}`}>{tag.value}</span>)}
-                {activeTrack.genres?.slice(0, 3).map((tag) => <span key={`g-${tag.value}`}>{tag.value}</span>)}
-              </div>
-              {currentScriptLines.length ? (
-                <div className="scriptBox">
-                  <h3>口播稿</h3>
-                  {currentScriptLines.map((line, index) => (
-                    <p key={`line-${index}`}>{line}</p>
-                  ))}
-                </div>
-              ) : null}
-              <ul className="evidenceList">
-                {(activeTrack.evidence || []).map((item) => <li key={item}>{item}</li>)}
-              </ul>
-              <h3>相邻歌曲</h3>
-              <div className="chipRow">
-                {activeTrack.neighbors?.slice(0, 8).map((neighbor) => (
-                  <span key={neighbor.id}>{neighbor.title} · {neighbor.artist}</span>
-                ))}
-              </div>
-              <h3>来源歌单</h3>
-              <div className="chipRow">
-                {activeTrack.sources?.slice(0, 5).map((source) => (
-                  <span key={`${source.playlistId}-${source.title}`}>{source.title}</span>
-                ))}
-              </div>
-            </>
-          ) : (
-            <p>选择一首推荐歌查看证据。</p>
-          )}
-        </div>
-      </aside>
       {isImportPanelOpen ? (
         <div className="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="playlist-import-title">
           <div className="playlistModal">

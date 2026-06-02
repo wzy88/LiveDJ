@@ -64,13 +64,12 @@ button:focus-visible {
   overflow-x: hidden;
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
-  gap: 22px;
+  grid-template-columns: minmax(0, 1040px);
+  justify-content: center;
   padding: 22px;
 }
 
-.stage,
-.sidePanel {
+.stage {
   min-width: 0;
 }
 
@@ -158,13 +157,6 @@ h3 {
   line-height: 1.2;
 }
 
-.statusPills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
 .topActions {
   display: flex;
   flex-wrap: wrap;
@@ -185,22 +177,11 @@ h3 {
   box-shadow: 0 12px 30px rgba(74, 224, 182, 0.16);
 }
 
-.pill {
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  letter-spacing: 0;
-  color: rgba(244, 241, 234, 0.68);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.pillActive {
-  color: #191919;
-  background: #f0efe9;
+.tasteSummary {
+  margin: 10px 0 0;
+  color: rgba(244, 241, 234, 0.62);
+  line-height: 1.45;
+  font-size: 13px;
 }
 
 .clockPanel {
@@ -497,8 +478,7 @@ h3 {
   gap: 8px;
 }
 
-.queueActions button,
-.moduleHead button {
+.queueActions button {
   min-height: 34px;
   padding: 0 12px;
   border-radius: 999px;
@@ -587,91 +567,6 @@ h3 {
   color: rgba(244, 241, 234, 0.48);
   font-size: 12px;
   line-height: 1.45;
-}
-
-.sidePanel {
-  display: grid;
-  gap: 14px;
-  align-content: start;
-  min-height: calc(100dvh - 44px);
-}
-
-.module {
-  border-radius: 22px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(14, 14, 16, 0.92);
-  padding: 16px;
-}
-
-.moduleHead {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.moduleHead h2 {
-  font-size: 18px;
-}
-
-.module textarea {
-  min-height: 210px;
-  resize: vertical;
-  margin-bottom: 12px;
-  width: 100%;
-  border-radius: 16px;
-  padding: 12px;
-  line-height: 1.55;
-}
-
-.module pre {
-  white-space: pre-wrap;
-  line-height: 1.6;
-  color: rgba(244, 241, 234, 0.68);
-  margin: 0;
-}
-
-.tagCloud,
-.chipRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.tagCloud span,
-.chipRow span {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 12px;
-  color: rgba(244, 241, 234, 0.74);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.scriptBox {
-  margin-top: 14px;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px dashed rgba(255, 255, 255, 0.12);
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.scriptBox p {
-  margin: 8px 0 0;
-  line-height: 1.7;
-  color: rgba(244, 241, 234, 0.82);
-}
-
-.evidenceList {
-  margin: 14px 0 0;
-  padding-left: 18px;
-  color: rgba(244, 241, 234, 0.66);
-  line-height: 1.6;
-}
-
-.evidenceList li + li {
-  margin-top: 8px;
 }
 
 .modalOverlay {
@@ -832,8 +727,7 @@ audio[hidden] {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .deviceFrame,
-  .sidePanel {
+  .deviceFrame {
     min-height: auto;
   }
 }
@@ -870,16 +764,11 @@ audio[hidden] {
   }
 
   .deviceTop,
-  .queueHead,
-  .moduleHead {
+  .queueHead {
     flex-direction: column;
   }
 
   .topActions {
-    justify-content: flex-start;
-  }
-
-  .statusPills {
     justify-content: flex-start;
   }
 
@@ -906,8 +795,7 @@ audio[hidden] {
 }
 
 @media (max-width: 520px) {
-  .deviceFrame,
-  .sidePanel {
+  .deviceFrame {
     width: 320px;
     max-width: calc(100vw - 20px);
   }
