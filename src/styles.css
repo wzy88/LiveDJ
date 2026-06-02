@@ -325,6 +325,11 @@ h3 {
   color: rgba(244, 241, 234, 0.86);
 }
 
+.transport button:disabled {
+  cursor: wait;
+  opacity: 0.48;
+}
+
 .transportMain {
   width: 56px !important;
   height: 56px !important;

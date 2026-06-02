@@ -300,15 +300,14 @@ function App() {
   }
 
   async function startRadio() {
-    primeAudioElement();
     if (recommendations?.[0]) {
       await playTrackAtIndex(0, recommendations);
       return;
     }
-    const program = await loadRecommendations();
-    if (program?.queue?.[0]) {
-      await playTrackAtIndex(0, program.queue);
+    if (!isLoadingQueue) {
+      loadRecommendations();
     }
+    setStatus("正在准备可播队列，READY 后再点播放。");
   }
 
   async function playTrackAtIndex(index, queue = queueRef.current) {
@@ -658,6 +657,10 @@ function App() {
       await startRadio();
       return;
     }
+    if (!activeTrack.resolvedTrack) {
+      setStatus("这首还在解析音源，READY 后再点播放。");
+      return;
+    }
     if (!isPlaying) {
       const activeIndex = queueRef.current.findIndex((track) => track.id === activeTrack.id);
       if (activeTrack.resolvedTrack && activeIndex >= 0) {
@@ -755,7 +758,13 @@ function App() {
             </div>
             <div className="transport">
               <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
-              <button type="button" className="transportMain" onClick={handleTransportPlay} aria-label={isPlaying ? "暂停" : "播放"}>
+              <button
+                type="button"
+                className="transportMain"
+                onClick={handleTransportPlay}
+                disabled={isLoadingQueue || Boolean(activeTrack && !activeTrack.resolvedTrack)}
+                aria-label={isPlaying ? "暂停" : "播放"}
+              >
                 {isPlaying ? "Ⅱ" : "▶"}
               </button>
               <button type="button" onClick={handleNext} aria-label="下一首">▶</button>

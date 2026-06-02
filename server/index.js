@@ -71,6 +71,7 @@ app.post("/api/llm/config", (req, res) => {
     }
     saveLocalEnv({
       LLM_PROVIDER: "deepseek",
+      LLM_API_KEY: apiKey,
       DEEPSEEK_API_KEY: apiKey,
       DEEPSEEK_MODEL: model || "deepseek-chat",
       DEEPSEEK_API_BASE: apiBase,
