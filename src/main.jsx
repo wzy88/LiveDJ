@@ -49,6 +49,7 @@ function App() {
   const latestQueryRef = useRef(query);
   const activeTrackRef = useRef(activeTrack);
   const dialogueEndRef = useRef(null);
+  const scheduledTalkTrackIdRef = useRef("");
 
   useEffect(() => {
     refreshAll();
@@ -290,7 +291,7 @@ function App() {
       audioRef.current.muted = false;
       audioRef.current.volume = musicVolume;
       try {
-        await audioRef.current.play();
+        await playMusicAudio(audioRef.current);
         setIsPlaying(true);
       } catch (error) {
         setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
@@ -330,7 +331,7 @@ function App() {
       audioRef.current.preload = "auto";
       audioRef.current.volume = musicVolume;
       try {
-        await audioRef.current.play();
+        await playMusicAudio(audioRef.current);
         setIsPlaying(true);
       } catch (error) {
         setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
@@ -360,6 +361,7 @@ function App() {
     speechSeqRef.current += 1;
     talkTimersRef.current.forEach((timer) => clearTimeout(timer));
     talkTimersRef.current = [];
+    scheduledTalkTrackIdRef.current = "";
     if (voiceRef.current) {
       voiceRef.current.pause();
       voiceRef.current.onended = null;
@@ -421,9 +423,29 @@ function App() {
     return `${apiBase}/api/audio?url=${encodeURIComponent(url)}`;
   }
 
+  async function playMusicAudio(audio) {
+    try {
+      audio.muted = false;
+      await audio.play();
+      return;
+    } catch (error) {
+      if (!/interact|gesture|allowed|permission/i.test(error.message || "")) {
+        throw error;
+      }
+      audio.muted = true;
+      await audio.play();
+      window.setTimeout(() => {
+        audio.muted = false;
+        audio.volume = isNarrating ? Math.min(musicVolume, currentTalkSegment?.musicVolume ?? 0.24) : musicVolume;
+      }, 80);
+    }
+  }
+
   function scheduleTalkover(track) {
     const script = track.script;
     if (!script) return;
+    if (scheduledTalkTrackIdRef.current === track.id) return;
+    scheduledTalkTrackIdRef.current = track.id;
     const durationMs = Math.max(120000, Math.round((track.resolvedTrack?.durationSec || track.durationSec || 220) * 1000));
     const stages = Array.isArray(script.stages) && script.stages.length
       ? script.stages
@@ -605,6 +627,13 @@ function App() {
     if (reload) await loadRecommendations();
   }
 
+  function handleNativeAudioPlay() {
+    setIsPlaying(true);
+    if (!activeTrack?.resolvedTrack) return;
+    scheduleTalkover(activeTrack);
+    sendFeedback(activeTrack.id, "played", false).catch(() => {});
+  }
+
   async function handlePromptSubmit(event) {
     event.preventDefault();
     const nextQuery = promptText.trim();
@@ -782,6 +811,17 @@ function App() {
             </div>
           </div>
 
+          <audio
+            ref={audioRef}
+            className="nativeAudioPlayer"
+            controls={Boolean(resolvedTrack?.streamUrl)}
+            src={resolvedTrack?.streamUrl ? toAudioSource(resolvedTrack.streamUrl) : undefined}
+            onPlay={handleNativeAudioPlay}
+            onEnded={handleTrackEnded}
+            preload="auto"
+            playsInline
+          />
+
           <div className="liveDjPanel">
             <div className="liveDjCopy">
               <p className="label">{currentTalkSegment?.label || "Live DJ"}</p>
@@ -866,7 +906,6 @@ function App() {
             </div>
           </div>
 
-          <audio ref={audioRef} onEnded={handleTrackEnded} preload="auto" playsInline hidden />
         </div>
       </section>
 
