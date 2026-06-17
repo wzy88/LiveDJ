@@ -9,6 +9,7 @@ function App() {
   const [profile, setProfile] = useState(null);
   const [importMode, setImportMode] = useState("link");
   const [playlistUrl, setPlaylistUrl] = useState("");
+  const [playlistText, setPlaylistText] = useState("");
   const [playlistImageDataUrl, setPlaylistImageDataUrl] = useState("");
   const [playlistImageName, setPlaylistImageName] = useState("");
   const [query, setQuery] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
@@ -50,6 +51,7 @@ function App() {
   const activeTrackRef = useRef(activeTrack);
   const dialogueEndRef = useRef(null);
   const scheduledTalkTrackIdRef = useRef("");
+  const playedFeedbackRef = useRef(new Set());
 
   useEffect(() => {
     refreshAll();
@@ -127,12 +129,14 @@ function App() {
     try {
       const result = importMode === "screenshot"
         ? await importPlaylistScreenshot()
-        : await importPlaylistLink();
+        : importMode === "text"
+          ? await importPlaylistText()
+          : await importPlaylistLink();
       const extractedCount = result.source?.extractedCount || result.importedCount || 0;
       setProfile(result);
-      appendDialogueMessage("user", importMode === "screenshot" ? `上传了一张歌单截图` : `导入了一个歌单链接`);
-      appendDialogueMessage("dj", `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount} 首。现在按你的歌单重排。`);
-      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
+      appendDialogueMessage("user", importMode === "screenshot" ? "上传了一张歌单截图" : importMode === "text" ? "粘贴了一段歌单文字" : "导入了一个歌单链接");
+      appendDialogueMessage("dj", buildImportSummary(result, extractedCount));
+      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；我会用这些口味信号找稳定可播的队列。`);
       await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
       setIsImportPanelOpen(false);
     } catch (error) {
@@ -173,6 +177,15 @@ function App() {
     return fetchJson("/api/profile/import-link", {
       method: "POST",
       body: JSON.stringify({ url })
+    });
+  }
+
+  async function importPlaylistText() {
+    const text = playlistText.trim();
+    if (!text) throw new Error("请先粘贴歌单文字，每行像“歌名 - 歌手”。");
+    return fetchJson("/api/profile/import", {
+      method: "POST",
+      body: JSON.stringify({ text })
     });
   }
 
@@ -227,6 +240,10 @@ function App() {
           appendDialogueMessage("dj", nextQueue[0].script?.opening || "我按这句话重新排好了。");
         }
         prewarmScriptAudio(nextQueue);
+      } else {
+        setActiveTrack(null);
+        setResolvedTrack(null);
+        setDjLine("这次没有找到稳定可播的歌。我会更保守一点，你也可以换个状态词或者导入更多歌。");
       }
       setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放，后台继续补齐队列。` : "这次候选都没有通过可播验证，正在后台继续补。");
       if (nextQueue.length < 8) {
@@ -297,7 +314,7 @@ function App() {
         setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
       }
     }
-    await sendFeedback(track.id, "played", false);
+    await markPlayed(track.id);
   }
 
   async function startRadio() {
@@ -340,11 +357,14 @@ function App() {
       }
     }
     scheduleTalkover(track);
-    await sendFeedback(track.id, "played", false);
+    await markPlayed(track.id);
   }
 
   async function handleTrackEnded() {
     stopSpeechAndTimers();
+    if (activeTrack?.id) {
+      sendFeedback(activeTrack.id, "complete", false).catch(() => {});
+    }
     const nextIndex = currentIndex + 1;
     const queue = queueRef.current;
     if (queue[nextIndex]) {
@@ -610,6 +630,7 @@ function App() {
     const text = segment?.text || djLine;
     if (!text) return;
     await speakOverMusic(text, segment || { id: "manual-replay", label: "重说口播", text, musicVolume: 0.22 });
+    if (activeTrack?.id) sendFeedback(activeTrack.id, "replay", false).catch(() => {});
   }
 
   function skipCurrentTalk() {
@@ -627,11 +648,17 @@ function App() {
     if (reload) await loadRecommendations();
   }
 
+  async function markPlayed(songId) {
+    if (!songId || playedFeedbackRef.current.has(songId)) return;
+    playedFeedbackRef.current.add(songId);
+    await sendFeedback(songId, "played", false);
+  }
+
   function handleNativeAudioPlay() {
     setIsPlaying(true);
     if (!activeTrack?.resolvedTrack) return;
     scheduleTalkover(activeTrack);
-    sendFeedback(activeTrack.id, "played", false).catch(() => {});
+    markPlayed(activeTrack.id).catch(() => {});
   }
 
   async function handlePromptSubmit(event) {
@@ -709,6 +736,9 @@ function App() {
   }
 
   async function handleNext() {
+    if (activeTrack?.id && isPlaying) {
+      sendFeedback(activeTrack.id, "skip", false).catch(() => {});
+    }
     const nextIndex = currentIndex + 1;
     const queue = queueRef.current;
     if (queue[nextIndex]) {
@@ -723,12 +753,14 @@ function App() {
 
   const profileText = useMemo(() => {
     if (!profile) return "暂无画像";
+    const unmatched = (profile.unmatched || []).slice(0, 5).map((track) => `未匹配：${track.title} - ${track.artist}`);
     return [
       `导入 ${profile.importedCount || 0} 首 / 匹配 ${profile.matchedCount || 0} 首`,
-      profile.resolvedCount ? `已解析可播 ${profile.resolvedCount} 首` : "",
+      profile.resolvedCount ? `导入歌已确认可播 ${profile.resolvedCount} 首` : "导入歌会作为口味信号，队列会优先找稳定可播版本",
       profile.topScenes?.length ? `场景 ${profile.topScenes.map((x) => x.value).join("、")}` : "",
       profile.topMoods?.length ? `情绪 ${profile.topMoods.map((x) => x.value).join("、")}` : "",
-      profile.topGenres?.length ? `曲风 ${profile.topGenres.map((x) => x.value).join("、")}` : ""
+      profile.topGenres?.length ? `曲风 ${profile.topGenres.map((x) => x.value).join("、")}` : "",
+      ...unmatched
     ].filter(Boolean).join("\n");
   }, [profile]);
 
@@ -903,6 +935,12 @@ function App() {
                   </span>
                 </button>
               ))}
+              {!isLoadingQueue && !recommendations.length ? (
+                <div className="emptyQueue">
+                  <strong>还没有稳定可播的队列</strong>
+                  <span>换一句状态，或导入你的歌单，我会重新找能播且贴近的歌。</span>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -923,6 +961,7 @@ function App() {
             </div>
             <div className="importSwitch" role="tablist" aria-label="歌单导入方式">
               <button type="button" className={importMode === "link" ? "active" : ""} onClick={() => setImportMode("link")}>链接</button>
+              <button type="button" className={importMode === "text" ? "active" : ""} onClick={() => setImportMode("text")}>文字</button>
               <button type="button" className={importMode === "screenshot" ? "active" : ""} onClick={() => setImportMode("screenshot")}>截图</button>
             </div>
             {importMode === "link" ? (
@@ -932,6 +971,16 @@ function App() {
                   value={playlistUrl}
                   onChange={(event) => setPlaylistUrl(event.target.value)}
                   placeholder="粘贴网易云歌单链接，例如 https://music.163.com/#/playlist?id=..."
+                />
+              </label>
+            ) : importMode === "text" ? (
+              <label className="importField">
+                <span>歌单文字</span>
+                <textarea
+                  value={playlistText}
+                  onChange={(event) => setPlaylistText(event.target.value)}
+                  placeholder={"每行一首，例如：\n遇见 - 孙燕姿\n十年 - 陈奕迅"}
+                  rows={8}
                 />
               </label>
             ) : (
@@ -1018,6 +1067,13 @@ function formatDate(value) {
     month: "short",
     year: "numeric"
   }).format(new Date(value));
+}
+
+function buildImportSummary(result, extractedCount) {
+  const unmatchedCount = Math.max(0, (result.importedCount || extractedCount || 0) - (result.matchedCount || 0));
+  const playableText = result.resolvedCount ? `，其中 ${result.resolvedCount} 首已经确认可播` : "";
+  const unmatchedText = unmatchedCount ? `；还有 ${unmatchedCount} 首没匹配上，我会先用相近口味补队列` : "";
+  return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。现在按你的歌单重排。`;
 }
 
 async function fetchJson(path, init = {}) {

@@ -5,13 +5,13 @@ import { generateTalkScriptWithLlm } from "./llm.js";
 
 export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 } = {}) {
   const profile = loadProfile();
-  const raw = recommend({ query, limit: Math.max(12, limit * 4) });
+  const raw = recommend({ query, limit: Math.max(24, limit * 6) });
   const queue = [];
   const rejected = [];
-  const candidates = (raw.recommendations || []).slice(0, Math.max(12, limit * 3));
+  const candidates = (raw.recommendations || []).slice(0, Math.max(24, limit * 5));
   const usedIds = new Set();
   for (const track of candidates) {
-    const cached = getCleanPlayableRecord(track.id);
+    const cached = getCleanPlayableRecord(track.id, track);
     if (!cached?.streamUrl) continue;
     pushPlayable(queue, track, cached, { query, profile, anchors: raw.anchors || [] });
     usedIds.add(track.id);
@@ -31,7 +31,7 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
         const track = batch[batchIndex];
         if (queue.length >= limit) return;
         if (result.status !== "fulfilled" || !result.value) {
-          rejected.push({ id: track.id, title: track.title, artist: track.artist });
+          rejected.push({ id: track.id, title: track.title, artist: track.artist, reason: "音源不可播或匹配不可靠" });
           return;
         }
         pushPlayable(queue, track, result.value, { query, profile, anchors: raw.anchors || [] });
@@ -41,7 +41,7 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
 
   for (const track of candidates) {
     if (queue.some((item) => item.id === track.id) || rejected.some((item) => item.id === track.id)) continue;
-    rejected.push({ id: track.id, title: track.title, artist: track.artist });
+    rejected.push({ id: track.id, title: track.title, artist: track.artist, reason: "本轮时间内未完成解析" });
   }
 
   await enrichQueueScripts(queue, { query, profile, anchors: raw.anchors || [] });
@@ -59,11 +59,17 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
 
 function pushPlayable(queue, track, resolvedTrack, context) {
   const queueIndex = queue.length;
-  queue.push({
+  const displayTrack = {
     ...track,
+    title: resolvedTrack.title || track.title,
+    artist: resolvedTrack.artist || track.artist,
+    durationSec: resolvedTrack.durationSec || track.durationSec
+  };
+  queue.push({
+    ...displayTrack,
     playable: true,
     resolvedTrack,
-    script: buildTalkScript(track, {
+    script: buildTalkScript(displayTrack, {
       ...context,
       queueIndex
     }),
@@ -332,7 +338,7 @@ function buildClosing(track, nextTrack, context = {}) {
 
 function pickRelation(track, nextTrack) {
   const sharedMood = firstSharedValue(track.moods, nextTrack.moods);
-  if (sharedMood) return `${sharedMood}的情绪`;
+  if (sharedMood) return `${sharedMood}这口气`;
   const sharedScene = firstSharedValue(track.scenes, nextTrack.scenes);
   if (sharedScene) return `${sharedScene}的场景`;
   const sharedGenre = firstSharedValue(track.genres, nextTrack.genres);

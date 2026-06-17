@@ -626,6 +626,28 @@ h3 {
   animation: tuneSweep 1.35s ease-in-out infinite;
 }
 
+.emptyQueue {
+  min-height: 92px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.emptyQueue strong {
+  color: rgba(244, 241, 234, 0.9);
+  font-size: 14px;
+}
+
+.emptyQueue span {
+  color: rgba(244, 241, 234, 0.56);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .queueRow.active {
   background: linear-gradient(90deg, rgba(74, 224, 182, 0.18), rgba(255, 255, 255, 0.03));
   border-color: rgba(74, 224, 182, 0.34);
@@ -731,7 +753,7 @@ h3 {
 
 .importSwitch {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 16px 0 14px;
   padding: 4px;
@@ -769,6 +791,15 @@ h3 {
   min-height: 52px;
   border-radius: 16px;
   padding: 0 14px;
+}
+
+.importField textarea {
+  width: 100%;
+  min-height: 170px;
+  border-radius: 16px;
+  padding: 14px;
+  line-height: 1.55;
+  resize: vertical;
 }
 
 .screenshotDrop {
@@ -896,7 +927,7 @@ h3 {
   .queuePanel {
     align-self: flex-start;
     width: 100%;
-    max-width: calc(100vw - 96px);
+    max-width: none;
   }
 
   .deviceTop,

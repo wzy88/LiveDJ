@@ -35,10 +35,16 @@ export function loadProfile() {
       importedTracks: [],
       feedback: {},
       recent: [],
+      events: [],
       updatedAt: null
     };
   }
-  return JSON.parse(fs.readFileSync(profilePath, "utf8"));
+  const profile = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+  profile.importedTracks = profile.importedTracks || [];
+  profile.feedback = profile.feedback || {};
+  profile.recent = profile.recent || [];
+  profile.events = profile.events || [];
+  return profile;
 }
 
 export function saveProfile(profile) {
@@ -48,7 +54,8 @@ export function saveProfile(profile) {
 
 export async function importPlaylistText(text) {
   const tracks = parsePlaylistText(text);
-  return importPlaylistTracks(tracks, { resolveUnmatched: true });
+  const profile = await importPlaylistTracks(tracks, { resolveUnmatched: true });
+  return { ...profile, source: { type: "text", extractedCount: tracks.length } };
 }
 
 export async function importPlaylistTracks(tracks, { resolveUnmatched = false } = {}) {
@@ -103,8 +110,12 @@ function normalizeImportedTracks(tracks = []) {
 
 export function summarizeProfile(profile = loadProfile(), graph = loadGraph()) {
   const matched = profile.importedTracks.filter((track) => track.match?.songId);
-  const resolved = profile.importedTracks.filter((track) => track.resolvedTrack?.streamUrl);
+  const resolved = profile.importedTracks.filter((track) => {
+    const matchedId = track.match?.songId;
+    return track.resolvedTrack?.streamUrl || (matchedId && getCleanPlayableRecord(matchedId, track)?.streamUrl);
+  });
   const vectors = buildTasteVectors(profile, graph);
+  const recentEvents = (profile.events || []).slice(-80);
   return {
     importedCount: profile.importedTracks.length,
     matchedCount: matched.length,
@@ -115,6 +126,9 @@ export function summarizeProfile(profile = loadProfile(), graph = loadGraph()) {
     topGenres: topValues(vectors.genres, 8),
     topArtists: topValues(vectors.artists, 8),
     feedbackCount: Object.keys(profile.feedback || {}).length,
+    listeningEvents: recentEvents.length,
+    completedCount: recentEvents.filter((event) => event.signal === "complete").length,
+    skippedCount: recentEvents.filter((event) => event.signal === "skip").length,
     updatedAt: profile.updatedAt
   };
 }
@@ -168,12 +182,15 @@ export function recommend({ query = "", limit = 16 } = {}) {
       score += queryTokens.length ? scoreQueryFit(song, queryTokens) : 0;
       score += Math.min(16, song.score * 0.18);
       score += Math.min(10, song.appearances * 0.7);
+      const playableRecord = getCleanPlayableRecord(song.id, song);
       score += profile.feedback?.[song.id] || 0;
+      if (playableRecord?.streamUrl) score += 18;
+      if (hasProviderCandidate(song)) score += 4;
       if (vectors.artists[normalizeArtist(song.artist)]) score += 8;
       if (recentIds.has(song.id)) score -= 45;
       return {
         ...song,
-        playable: Boolean(getCleanPlayableRecord(song.id)?.streamUrl),
+        playable: Boolean(playableRecord?.streamUrl),
         recommendScore: Math.round(score * 100) / 100,
         evidence: Array.from(new Set([
           ...(evidence.get(id) || []),
@@ -199,11 +216,20 @@ export function recordFeedback(songId, signal) {
     like: 8,
     dislike: -12,
     skip: -5,
-    played: 1
+    played: 1,
+    complete: 4,
+    replay: 3
   }[signal] || 0;
+  if (!songId || !delta && !["played", "skip", "complete", "replay"].includes(signal)) {
+    return summarizeProfile(profile);
+  }
   profile.feedback = profile.feedback || {};
   profile.feedback[songId] = (profile.feedback[songId] || 0) + delta;
   profile.recent = [...(profile.recent || []), songId].slice(-80);
+  profile.events = [
+    ...(profile.events || []),
+    { songId, signal, at: new Date().toISOString() }
+  ].slice(-240);
   saveProfile(profile);
   return summarizeProfile(profile);
 }
@@ -338,6 +364,10 @@ function isChineseSong(song) {
   if (hasChineseText) return true;
   if (!languageValues.includes("华语") && !languageValues.includes("粤语")) return false;
   return /孙燕姿|陈奕迅|林忆莲|梁静茹|蔡健雅|周杰伦|王菲|田馥甄|五月天|方大同|陶喆|李荣浩|毛不易|邓紫棋|gem|eason|tanya|hebe/i.test(song.artist);
+}
+
+function hasProviderCandidate(song) {
+  return Array.isArray(song.providerIds) && song.providerIds.some((id) => Number(id) > 0);
 }
 
 function tokenize(value) {
