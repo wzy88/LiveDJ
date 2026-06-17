@@ -78,19 +78,25 @@ function pushPlayable(queue, track, resolvedTrack, context) {
 }
 
 async function enrichQueueScripts(queue, context) {
-  await Promise.all(queue.slice(0, 4).map(async (track, index) => {
+  const recentLines = [];
+  for (const [index, track] of queue.slice(0, 6).entries()) {
     const script = await generateTalkScriptWithLlm({
       track,
-      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null },
+      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null, recentLines },
       fallbackScript: track.script
     });
-    if (!script) return;
-    track.script = script;
-    track.scriptSource = "llm";
-  }));
+    if (script) {
+      track.script = script;
+      track.scriptSource = "llm";
+      recentLines.push(...script.lines);
+    } else {
+      recentLines.push(...(track.script?.lines || []));
+    }
+  }
 }
 
 function attachProgramFlow(queue, context) {
+  const usedLines = [];
   queue.forEach((track, index) => {
     const script = normalizeTalkScript(track.script);
     const nextTrack = queue[index + 1] || null;
@@ -99,20 +105,32 @@ function attachProgramFlow(queue, context) {
       queueIndex: index
     });
     const closing = script.closing || buildClosing(track, nextTrack, context);
-    const stages = buildTalkStages({
+    const dedupedScript = dedupeTalkScript({
       ...script,
       nextTease,
       closing
-    }, track);
+    }, usedLines);
+    const stages = buildTalkStages(dedupedScript, track);
+    usedLines.push(...stages.map((stage) => stage.text).filter(Boolean));
 
     track.script = {
-      ...script,
-      nextTease,
-      closing,
+      ...dedupedScript,
       stages,
       lines: stages.map((stage) => stage.text).filter(Boolean)
     };
   });
+}
+
+function dedupeTalkScript(script, usedLines) {
+  const opening = isTooSimilar(script.opening, usedLines) ? "" : script.opening;
+  const bridges = (script.bridges || []).filter((line) => !isTooSimilar(line, usedLines));
+  const nextTease = isTooSimilar(script.nextTease, usedLines) ? "" : script.nextTease;
+  return {
+    opening: opening || bridges.shift() || script.opening,
+    bridges: bridges.slice(0, 2),
+    nextTease,
+    closing: script.closing
+  };
 }
 
 function normalizeTalkScript(script = {}) {
@@ -131,7 +149,7 @@ function normalizeTalkScript(script = {}) {
 
 function buildTalkStages(script, track) {
   const bridges = script.bridges || [];
-  return [
+  const stages = [
     {
       id: `${track.id}:intro`,
       type: "intro",
@@ -174,6 +192,13 @@ function buildTalkStages(script, track) {
       musicVolume: 0.18
     }
   ].filter((stage) => stage.text);
+  if (track.scriptSource !== "llm") {
+    return stages.filter((stage) => ["intro", "bridge", "next"].includes(stage.type)).filter((stage, index, list) => {
+      if (stage.type !== "bridge") return true;
+      return list.findIndex((item) => item.type === "bridge") === index;
+    });
+  }
+  return stages;
 }
 
 async function resolveWithTimeout(track, timeoutMs) {
@@ -286,7 +311,7 @@ function buildOpeningOptions(frame, archetype, slotCue) {
 
 function buildBridgeOneOptions(frame, archetype) {
   return [
-    `刚才这一分钟最好的地方，是它没有急着替你下判断。很多下班后的疲惫，其实只需要先从“必须回应”里退出来。`,
+    `刚才这一分钟最好的地方，是它没有急着替你下判断。很多下班后的疲惫，其实只需要先从必须回应的状态里退出来。`,
     `我喜欢这种留白，不是空，是给人一个不用解释自己的地方。外面的声音还在，但你可以暂时不追上每一件事。`,
     frame.secondGenre
       ? `节奏里那点轻微的摆动很有用，它会让身体先放松，脑子才跟得上。人有时候就是需要从肩膀开始慢下来。`
@@ -452,6 +477,51 @@ function inferGenre(query) {
 function chooseLine(options, seedText = "", query = "") {
   const seed = hashText(`${seedText}::${query}`);
   return options[seed % options.length];
+}
+
+function isTooSimilar(line, usedLines = []) {
+  const key = normalizeSimilarity(line);
+  if (!key || key.length < 12) return false;
+  const linePhrases = signaturePhrases(line);
+  return usedLines.some((used) => {
+    const usedKey = normalizeSimilarity(used);
+    if (!usedKey) return false;
+    const sharedPhrase = linePhrases.some((phrase) => signaturePhrases(used).includes(phrase));
+    return sharedPhrase || key.includes(usedKey.slice(0, 14)) || usedKey.includes(key.slice(0, 14)) || overlapScore(key, usedKey) > 0.62;
+  });
+}
+
+function normalizeSimilarity(value = "") {
+  return cleanText(value)
+    .replace(/[《》“”"'，。！？、,.!?]/g, "")
+    .replace(/\s+/g, "")
+    .slice(0, 80);
+}
+
+function overlapScore(left, right) {
+  const leftTokens = new Set(left.match(/[\u4e00-\u9fff]{2}|[a-z0-9]{3,}/gi) || []);
+  const rightTokens = new Set(right.match(/[\u4e00-\u9fff]{2}|[a-z0-9]{3,}/gi) || []);
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) overlap += 1;
+  }
+  return overlap / Math.min(leftTokens.size, rightTokens.size);
+}
+
+function signaturePhrases(value = "") {
+  const clean = cleanText(value);
+  const phrases = [
+    "身体先松下来",
+    "肩膀先松下来",
+    "白天拧着",
+    "温柔的拉扯",
+    "不急着解决",
+    "不急着给答案",
+    "不把话说满",
+    "把解释放少一点"
+  ];
+  return phrases.filter((phrase) => clean.includes(phrase));
 }
 
 function hashText(text) {

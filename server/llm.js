@@ -106,7 +106,15 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           "你是 Claudio，一个像朋友一样的中文私人电台 DJ。",
           "根据当前歌曲、用户输入、用户画像和推荐依据，写真实贴合当下的口播。",
           "不要写主持腔、广告腔、功能说明、操作说明。",
-          "不要泛泛而谈，每首歌必须不同，必须引用歌曲或用户状态里的具体信息。",
+          "不要泛泛而谈，每首歌必须不同，必须引用歌曲、用户状态、推荐依据里的具体信息。",
+          "只能使用输入 JSON 中明确给出的信息；不要编造歌词、歌单名、用户曾经反复听过、歌曲背后的故事。",
+          "track.publicPlaylistReferences 只给你理解风格，不要在口播里说出这些公开歌单名，也不要把它说成“你导入的”。",
+          "只有 track.evidence 里明确出现“来自你导入的歌单”，才可以说这首歌来自用户导入歌单。",
+          "只有 nextTrack.evidence 里明确出现“来自你导入的歌单”，才可以说下一首来自用户导入歌单。",
+          "可以说“推荐依据显示”“和你导入的歌单接近”，但不要说“我猜你某晚反复听过”。",
+          "不要直接引用歌词原句；不要使用引号描述歌词、歌中某句、收尾那句或副歌那句。",
+          "避免重复 recentLines 里出现过的表达、比喻和句式。",
+          "每段要短一点，适合真的播出来：opening 45-75 字，bridge 每条 35-65 字，nextTease 35-75 字。",
           "如果有下一首歌，nextTease 要自然把当前歌尾巴接到下一首，不要像报幕。",
           "只输出 JSON：{\"opening\":\"...\",\"bridges\":[\"...\",\"...\"],\"nextTease\":\"...\",\"closing\":\"...\"}。"
         ].join("\n")
@@ -123,15 +131,17 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
             moods: (track.moods || []).slice(0, 4),
             genres: (track.genres || []).slice(0, 3),
             evidence: (track.evidence || []).slice(0, 4),
-            sources: (track.sources || []).slice(0, 3).map((item) => item.title)
+            publicPlaylistReferences: (track.sources || []).slice(0, 3).map((item) => item.title)
           },
           nextTrack: context.nextTrack ? {
             title: context.nextTrack.title,
             artist: context.nextTrack.artist,
             scenes: (context.nextTrack.scenes || []).slice(0, 3),
             moods: (context.nextTrack.moods || []).slice(0, 3),
-            genres: (context.nextTrack.genres || []).slice(0, 2)
+            genres: (context.nextTrack.genres || []).slice(0, 2),
+            evidence: (context.nextTrack.evidence || []).slice(0, 4)
           } : null,
+          recentLines: (context.recentLines || []).slice(-10),
           profile: {
             importedCount: context.profile?.importedTracks?.length || 0,
             importedTracks: (context.profile?.importedTracks || []).slice(0, 12).map((item) => ({
@@ -140,7 +150,11 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
               matched: Boolean(item.match?.songId)
             }))
           },
-          fallbackScript
+          fallbackScript: {
+            opening: fallbackScript?.opening || "",
+            bridges: (fallbackScript?.bridges || []).slice(0, 2),
+            nextTease: fallbackScript?.nextTease || ""
+          }
         })
       }
     ]
@@ -160,15 +174,23 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || "";
     const parsed = JSON.parse(content);
-    const opening = cleanLine(parsed.opening).slice(0, 180);
+    const directImport = hasDirectImportEvidence(track);
+    const nextDirectImport = hasDirectImportEvidence(context.nextTrack);
+    const sanitizerContext = { directImport, publicPlaylistNames: getPublicPlaylistNames(track) };
+    const nextSanitizerContext = { directImport: nextDirectImport, publicPlaylistNames: getPublicPlaylistNames(track) };
+    const opening = sanitizeTalkClaim(cleanLine(parsed.opening), sanitizerContext).slice(0, 150);
     const bridges = (Array.isArray(parsed.bridges) ? parsed.bridges : [])
-      .map((line) => cleanLine(line).slice(0, 180))
+      .map((line) => sanitizeTalkClaim(cleanLine(line), sanitizerContext).slice(0, 130))
       .filter(Boolean)
       .slice(0, 2);
-    const nextTease = cleanLine(parsed.nextTease).slice(0, 180) || fallbackScript.nextTease || "";
-    const closing = cleanLine(parsed.closing).slice(0, 140) || fallbackScript.closing || "";
+    const nextTease = sanitizeTalkClaim(cleanLine(parsed.nextTease), nextSanitizerContext).slice(0, 150) || fallbackScript.nextTease || "";
+    const closing = sanitizeTalkClaim(cleanLine(parsed.closing), sanitizerContext).slice(0, 120) || fallbackScript.closing || "";
+    const recentLines = (context.recentLines || []).map((line) => cleanLine(line));
+    if (isTooSimilarToRecent(opening, recentLines)) return null;
     if (!opening || bridges.length < 1) return null;
-    const nextBridges = bridges.length >= 2 ? bridges : [...bridges, fallbackScript.bridges?.[1]].filter(Boolean).slice(0, 2);
+    const nextBridges = (bridges.length >= 2 ? bridges : [...bridges, fallbackScript.bridges?.[1]].filter(Boolean).slice(0, 2))
+      .filter((line) => !isTooSimilarToRecent(line, recentLines));
+    if (!nextBridges.length) return null;
     return {
       opening,
       bridges: nextBridges,
@@ -179,6 +201,120 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
   } catch {
     return null;
   }
+}
+
+function hasDirectImportEvidence(track = {}) {
+  return (track.evidence || []).some((item) => String(item).includes("来自你导入的歌单"));
+}
+
+function getPublicPlaylistNames(track = {}) {
+  return (track.sources || [])
+    .map((item) => cleanLine(item?.title || ""))
+    .filter(Boolean);
+}
+
+function sanitizeTalkClaim(line, context = {}) {
+  const { directImport = false, publicPlaylistNames = [] } = context;
+  let clean = cleanLine(line);
+  if (!directImport) {
+    clean = clean
+      .replace(/这首[^，。；]*从你导入的歌单里[^，。；]*[，。；]?/g, "推荐依据显示它和你的导入歌单很接近，")
+      .replace(/也来自你导入的歌单/g, "也和你的导入歌单接近")
+      .replace(/来自你导入的歌单/g, "和你的导入歌单接近")
+      .replace(/也来自你的歌单/g, "也和你的歌单接近")
+      .replace(/来自你的歌单/g, "和你的歌单接近")
+      .replace(/也在你导入的歌单里/g, "也和你的导入歌单接近")
+      .replace(/也在你歌单里/g, "也和你的歌单接近")
+      .replace(/从你导入的歌单里翻出来的?/g, "和你的导入歌单很接近")
+      .replace(/你歌单里本来就有/g, "推荐依据里它很贴近你的歌单")
+      .replace(/你导入的歌单里本来就有/g, "推荐依据里它很贴近你的歌单")
+      .replace(/你导入的歌单里[^，。；]*这首/g, "推荐依据里这首")
+      .replace(/你导入的歌单里那些/g, "你歌单附近那些")
+      .replace(/你导入的歌单里/g, "你歌单附近")
+      .replace(/你收藏了不少/g, "这些参考歌单里有不少")
+      .replace(/你常听的那些歌/g, "你导入歌单附近的歌");
+  }
+  clean = removeLyricQuoteClaims(clean);
+  clean = removePublicPlaylistNames(clean, publicPlaylistNames);
+  return clean
+    .replace(/我猜[^，。；]*(反复听过|某个晚上)[，。；]?/g, "")
+    .replace(/你反复听过/g, "你可能会熟悉")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function removeLyricQuoteClaims(line) {
+  return cleanLine(line)
+    .replace(/(?:收尾|开头|副歌|歌里|歌词里|歌中|这一段|那一段|最后|歌尾巴)?[^，。；]*?那句[“"'][^”"']+[”"'][^，。；]*[，。；]?/g, "这段表达不用说破，")
+    .replace(/歌词里[^，。；]*?[“"'][^”"']+[”"'][^，。；]*[，。；]?/g, "这里少引用歌词，只保留那点情绪，")
+    .replace(/(?:唱到|写到|反复唱)[^，。；]*?[“"'][^”"']+[”"'][^，。；]*[，。；]?/g, "歌里的情绪不用被复述，")
+    .replace(/[“"'][^”"']{1,40}[”"']/g, "")
+    .replace(/，{2,}/g, "，")
+    .replace(/^，|，$/g, "")
+    .trim();
+}
+
+function removePublicPlaylistNames(line, names = []) {
+  let clean = cleanLine(line);
+  for (const name of names) {
+    clean = clean.replace(new RegExp(escapeRegExp(`「${name}」`), "g"), "这些公开参考");
+    clean = clean.replace(new RegExp(escapeRegExp(`《${name}》`), "g"), "这些公开参考");
+    clean = clean.replace(new RegExp(escapeRegExp(name), "g"), "这些公开参考");
+  }
+  return clean
+    .replace(/从(?:这些公开参考)(?:和(?:这些公开参考))*[^，。；]*(?:来源|歌单)[^，。；]*[，。；]?/g, "参考歌单只帮我校准一点气质，")
+    .replace(/这些公开参考和这些公开参考/g, "这些公开参考")
+    .replace(/这些公开参考两个来源/g, "这些公开参考")
+    .trim();
+}
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function isTooSimilarToRecent(line, recentLines = []) {
+  const key = normalizeForSimilarity(line);
+  if (!key || key.length < 12) return false;
+  const linePhrases = signaturePhrases(line);
+  return recentLines.some((recent) => {
+    const recentKey = normalizeForSimilarity(recent);
+    if (!recentKey) return false;
+    const sharedPhrase = linePhrases.some((phrase) => signaturePhrases(recent).includes(phrase));
+    return sharedPhrase || key.includes(recentKey.slice(0, 14)) || recentKey.includes(key.slice(0, 14)) || overlapScore(key, recentKey) > 0.62;
+  });
+}
+
+function normalizeForSimilarity(value = "") {
+  return cleanLine(value)
+    .replace(/[《》“”"'，。！？、,.!?]/g, "")
+    .replace(/\s+/g, "")
+    .slice(0, 80);
+}
+
+function overlapScore(left, right) {
+  const leftTokens = new Set(left.match(/[\u4e00-\u9fff]{2}|[a-z0-9]{3,}/gi) || []);
+  const rightTokens = new Set(right.match(/[\u4e00-\u9fff]{2}|[a-z0-9]{3,}/gi) || []);
+  if (!leftTokens.size || !rightTokens.size) return 0;
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) overlap += 1;
+  }
+  return overlap / Math.min(leftTokens.size, rightTokens.size);
+}
+
+function signaturePhrases(value = "") {
+  const clean = cleanLine(value);
+  const phrases = [
+    "身体先松下来",
+    "肩膀先松下来",
+    "白天拧着",
+    "温柔的拉扯",
+    "不急着解决",
+    "不急着给答案",
+    "不把话说满",
+    "把解释放少一点"
+  ];
+  return phrases.filter((phrase) => clean.includes(phrase));
 }
 
 export async function extractTracksFromPlaylistScreenshot(imageDataUrl) {
