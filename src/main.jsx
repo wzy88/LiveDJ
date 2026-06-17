@@ -633,6 +633,21 @@ function App() {
     if (activeTrack?.id) sendFeedback(activeTrack.id, "replay", false).catch(() => {});
   }
 
+  async function likeCurrentTrack() {
+    if (!activeTrack?.id) return;
+    await sendFeedback(activeTrack.id, "like", false);
+    setStatus(`记住了：以后多放一点像《${activeTrack.title}》这样的歌。`);
+    appendDialogueMessage("dj", `好，我会把《${activeTrack.title}》这一类权重调高一点。`);
+  }
+
+  async function dislikeCurrentTrack() {
+    if (!activeTrack?.id) return;
+    await sendFeedback(activeTrack.id, "dislike", false);
+    setStatus(`收到：以后少放一点像《${activeTrack.title}》这样的歌。`);
+    appendDialogueMessage("dj", `收到，这类我会少放一点，下一首换个方向。`);
+    await handleNext();
+  }
+
   function skipCurrentTalk() {
     if (!isNarrating && !currentTalkSegment) return;
     stopSpeechAndTimers();
@@ -768,6 +783,13 @@ function App() {
     ? `已导入 ${profile.importedCount} 首，匹配 ${profile.matchedCount || 0} 首`
     : "导入歌单后，电台会优先按你的口味接歌";
 
+  function queueMetaFor(track) {
+    if (track.evidence?.some((item) => item.includes("来自你导入的歌单"))) return "你的歌单";
+    if (track.scriptSource === "llm") return "DJ";
+    if (track.script?.stages?.length) return `${track.script.stages.length} 段`;
+    return track.playable ? "READY" : "准备中";
+  }
+
   return (
     <main className="appShell">
       <section className="stage">
@@ -860,6 +882,12 @@ function App() {
               <p>{djLine}</p>
             </div>
             <div className="talkControls">
+              <button type="button" onClick={likeCurrentTrack} disabled={!activeTrack}>
+                喜欢
+              </button>
+              <button type="button" onClick={dislikeCurrentTrack} disabled={!activeTrack}>
+                少来
+              </button>
               <button type="button" onClick={replayCurrentTalk} disabled={!djLine}>
                 重说
               </button>
@@ -931,7 +959,7 @@ function App() {
                     <small>{track.artist}</small>
                   </span>
                   <span className="queueMeta">
-                    {track.scriptSource === "llm" ? "DJ" : track.script?.stages?.length ? `${track.script.stages.length} 段` : track.playable ? "READY" : "准备中"}
+                    {queueMetaFor(track)}
                   </span>
                 </button>
               ))}

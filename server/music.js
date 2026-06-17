@@ -136,7 +136,7 @@ function scoreSong(song, expectedTitle, expectedArtist, index) {
   if (normalize(expectedTitle).includes(normalize(song.name))) score += 18;
   if (actualParts.includes(expectedPart)) score += 40;
   if (looksLikeMedleyTitle(song.name, expectedTitle)) return -100;
-  if (/live|现场|remix|cover|翻唱|翻自|伴奏|纯音乐|钢琴|吉他|demo|片段|试听|karaoke|instrumental|montagem|音乐社|音乐号|网友|粉丝|伤感版|烟嗓版|降调版|升调版|加速版/.test(haystack)) score -= 140;
+  if (/live|现场|remix|cover|翻唱|翻自|伴奏|纯音乐|钢琴|piano|吉他|guitar|acoustic|demo|片段|试听|karaoke|instrumental|montagem|音乐社|音乐号|网友|粉丝|伤感版|烟嗓版|降调版|升调版|加速版/.test(haystack)) score -= 140;
   const duration = getDurationMs(song);
   if (duration && duration < 120000) score -= 80;
   if (duration && duration > 180000) score += 10;
@@ -184,18 +184,19 @@ function getEmbeddedMusicApi() {
 
 function isDirtyResolvedRecord(record) {
   const haystack = `${record.title || ""} ${record.artist || ""} ${record.album || ""}`.toLowerCase();
-  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|吉他|demo|片段|试听|karaoke|instrumental|remix|dj版|montagem|电台版|剪辑|伤感版|烟嗓版|降调版|升调版|加速版|女声版|男声版/.test(haystack);
+  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|piano|吉他|guitar|acoustic|demo|片段|试听|karaoke|instrumental|remix|dj版|montagem|电台版|剪辑|伤感版|烟嗓版|降调版|升调版|加速版|女声版|男声版/.test(haystack);
 }
 
 function isExpectedSongMatch(actualTitle, expectedTitle, actualArtist, expectedArtist) {
   const actualTitleKey = normalizeSongTitle(actualTitle);
   const expectedTitleKey = normalizeSongTitle(expectedTitle);
   const actualArtistKey = normalize(actualArtist);
-  const expectedArtistKey = normalize(expectedArtist).split(/[\/,&，、]/)[0];
+  const actualPrimaryArtistKey = primaryArtistKey(actualArtist);
+  const expectedArtistKey = primaryArtistKey(expectedArtist);
   if (!actualTitleKey || !expectedTitleKey) return false;
   const titleMatch = actualTitleKey === expectedTitleKey || actualTitleKey.includes(expectedTitleKey) || expectedTitleKey.includes(actualTitleKey);
   if (!titleMatch || looksLikeMedleyTitle(actualTitle, expectedTitle)) return false;
-  const artistMatch = !expectedArtistKey || actualArtistKey.includes(expectedArtistKey) || expectedArtistKey.includes(actualArtistKey);
+  const artistMatch = !expectedArtistKey || actualPrimaryArtistKey === expectedArtistKey || actualArtistKey === expectedArtistKey;
   return artistMatch;
 }
 
@@ -213,4 +214,8 @@ function normalizeSongTitle(value = "") {
     .replace(/live版?|remix版?|cover版?|正式版|原版|录音室版|完整版|新版|旧版/g, "")
     .replace(/[-_·•"'“”‘’.,!?，。！？:：;；\s]/g, "")
     .trim();
+}
+
+function primaryArtistKey(value = "") {
+  return normalize(value).split(/[\/,&，、]| feat\.? | ft\.? /i)[0].trim();
 }

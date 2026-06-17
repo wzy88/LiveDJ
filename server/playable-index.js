@@ -22,7 +22,7 @@ export function loadPlayableIndex() {
 export function savePlayableIndex(index = loadPlayableIndex()) {
   cache = index;
   fs.mkdirSync(path.dirname(playablePath), { recursive: true });
-  fs.writeFileSync(playablePath, `${JSON.stringify({ ...index, updatedAt: new Date().toISOString() }, null, 2)}\n`);
+  atomicWriteJson(playablePath, { ...index, updatedAt: new Date().toISOString() });
 }
 
 export function getPlayableRecord(songId) {
@@ -49,7 +49,7 @@ export function storePlayableRecord(songId, record) {
 
 function isDirtyPlayableRecord(record) {
   const haystack = `${record.title || ""} ${record.artist || ""} ${record.album || ""}`.toLowerCase();
-  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|吉他|demo|片段|试听|karaoke|instrumental|remix|dj版|montagem|电台版|剪辑|伤感版|烟嗓版|降调版|升调版|加速版|女声版|男声版/.test(haystack);
+  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|piano|吉他|guitar|acoustic|demo|片段|试听|karaoke|instrumental|remix|dj版|montagem|电台版|剪辑|伤感版|烟嗓版|降调版|升调版|加速版|女声版|男声版/.test(haystack);
 }
 
 function isExpectedRecordMatch(songId, record, expected) {
@@ -66,7 +66,7 @@ function isExpectedRecordMatch(songId, record, expected) {
   if (!expectedArtist) return true;
   const actualArtistKey = normalizeArtist(record.artist);
   const expectedArtistKey = normalizeArtist(expectedArtist);
-  return !expectedArtistKey || actualArtistKey.includes(expectedArtistKey) || expectedArtistKey.includes(actualArtistKey);
+  return !expectedArtistKey || actualArtistKey === expectedArtistKey;
 }
 
 function parseSongId(songId = "") {
@@ -116,4 +116,10 @@ function normalizeArtist(value = "") {
 
 function normalize(value = "") {
   return String(value).toLowerCase().replace(/\s+/g, "").trim();
+}
+
+function atomicWriteJson(filePath, value) {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(tmpPath, filePath);
 }

@@ -49,7 +49,7 @@ export function loadProfile() {
 
 export function saveProfile(profile) {
   fs.mkdirSync(path.dirname(profilePath), { recursive: true });
-  fs.writeFileSync(profilePath, `${JSON.stringify({ ...profile, updatedAt: new Date().toISOString() }, null, 2)}\n`);
+  atomicWriteJson(profilePath, { ...profile, updatedAt: new Date().toISOString() });
 }
 
 export async function importPlaylistText(text) {
@@ -147,6 +147,8 @@ export function recommend({ query = "", limit = 16 } = {}) {
 
   for (const anchor of anchors) {
     const anchorWeight = Math.max(1, 1 + (profile.feedback?.[anchor.id] || 0) * 0.4);
+    addScore(scores, anchor.id, 72 * anchorWeight);
+    addEvidence(evidence, anchor.id, "来自你导入的歌单");
     for (const neighbor of anchor.neighbors || []) {
       addScore(scores, neighbor.id, neighbor.weight * 3.2 * anchorWeight);
       addEvidence(evidence, neighbor.id, `和你歌单里的《${anchor.title}》常在同类公开歌单共现`);
@@ -166,12 +168,11 @@ export function recommend({ query = "", limit = 16 } = {}) {
     }
   }
 
-  const anchorIds = new Set(anchors.map((song) => song.id));
   const recentIds = new Set((profile.recent || []).slice(-30));
   const ranked = Array.from(poolIds)
     .map((id) => {
       const song = graph.byId.get(id);
-      if (!song || anchorIds.has(song.id)) return null;
+      if (!song) return null;
       let score = scores.get(id) || 0;
       if (isLikelyBadMainSong(song)) return null;
       if (wantsChinese && !isChineseSong(song)) return null;
@@ -187,7 +188,7 @@ export function recommend({ query = "", limit = 16 } = {}) {
       if (playableRecord?.streamUrl) score += 18;
       if (hasProviderCandidate(song)) score += 4;
       if (vectors.artists[normalizeArtist(song.artist)]) score += 8;
-      if (recentIds.has(song.id)) score -= 45;
+      if (recentIds.has(song.id)) score -= scores.has(song.id) ? 18 : 45;
       return {
         ...song,
         playable: Boolean(playableRecord?.streamUrl),
@@ -355,7 +356,7 @@ function topValues(record, limit) {
 
 function isLikelyBadMainSong(song) {
   const haystack = `${song.title} ${song.artist}`.toLowerCase();
-  return /纯音乐|伴奏|钢琴版|吉他版|cover|翻唱|remix|demo|instrumental|karaoke|八音盒|白噪音|雨声|ost|soundtrack|live|现场|演唱会|电台版|剪辑|片段|试听|dj版/.test(haystack);
+  return /纯音乐|伴奏|钢琴版|piano|吉他版|guitar|acoustic|cover|翻唱|remix|demo|instrumental|karaoke|八音盒|白噪音|雨声|ost|soundtrack|live|现场|演唱会|电台版|剪辑|片段|试听|dj版/.test(haystack);
 }
 
 function isChineseSong(song) {
@@ -397,4 +398,10 @@ function normalizeArtist(value = "") {
 
 function cleanText(value = "") {
   return String(value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function atomicWriteJson(filePath, value) {
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(tmpPath, filePath);
 }
