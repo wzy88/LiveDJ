@@ -45,7 +45,6 @@ function App() {
   const talkTimersRef = useRef([]);
   const silentUrlRef = useRef("");
   const programPromiseRef = useRef(null);
-  const deepProgramPromiseRef = useRef(null);
   const speechSeqRef = useRef(0);
   const latestQueryRef = useRef(query);
   const activeTrackRef = useRef(activeTrack);
@@ -218,15 +217,27 @@ function App() {
 
   async function loadRecommendations(queryOverride = query, options = {}) {
     const effectiveQuery = String(queryOverride || "").trim();
-    if (!programPromiseRef.current) {
-      programPromiseRef.current = fetchJson(`/api/program?q=${encodeURIComponent(effectiveQuery)}&limit=10&wait=6500`).finally(() => {
+    const refreshSeed = options.refresh ? `${Date.now()}-${Math.random().toString(16).slice(2)}` : "";
+    const avoidIds = options.avoidCurrent ? queueRef.current.map((track) => track.id).filter(Boolean).slice(0, 6) : [];
+    const requestKey = JSON.stringify({ q: effectiveQuery, refreshSeed, avoidIds });
+    if (!programPromiseRef.current || programPromiseRef.current.key !== requestKey) {
+      const params = new URLSearchParams({
+        q: effectiveQuery,
+        limit: "10",
+        wait: options.refresh ? "3600" : "6500",
+        scriptWait: options.refresh ? "900" : "4200"
+      });
+      if (refreshSeed) params.set("refresh", refreshSeed);
+      if (avoidIds.length) params.set("avoid", avoidIds.join(","));
+      const promise = fetchJson(`/api/program?${params.toString()}`).finally(() => {
         programPromiseRef.current = null;
       });
+      programPromiseRef.current = { key: requestKey, promise };
     }
     setStatus("正在生成可播队列...");
     setIsLoadingQueue(true);
     try {
-      const result = await programPromiseRef.current;
+      const result = await programPromiseRef.current.promise;
       const nextQueue = result.queue || [];
       setRecommendations(nextQueue);
       queueRef.current = nextQueue;
@@ -237,7 +248,7 @@ function App() {
         setResolvedTrack(nextQueue[0].resolvedTrack || null);
         setDjLine(nextQueue[0].script?.opening || "新的电台队列已经排好。");
         if (options.appendDjResponse) {
-          appendDialogueMessage("dj", nextQueue[0].script?.opening || "我按这句话重新排好了。");
+          appendDialogueMessage("dj", buildProgramReadyReply(nextQueue));
         }
         prewarmScriptAudio(nextQueue);
       } else {
@@ -245,34 +256,21 @@ function App() {
         setResolvedTrack(null);
         setDjLine("这次没有找到稳定可播的歌。我会更保守一点，你也可以换个状态词或者导入更多歌。");
       }
-      setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放，后台继续补齐队列。` : "这次候选都没有通过可播验证，正在后台继续补。");
-      if (nextQueue.length < 8) {
-        fillQueueInBackground(effectiveQuery, nextQueue.length);
-      }
+      setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
       return result;
     } finally {
       setIsLoadingQueue(false);
     }
   }
 
-  async function fillQueueInBackground(querySnapshot, currentCount) {
-    if (deepProgramPromiseRef.current) return;
-    deepProgramPromiseRef.current = fetchJson(`/api/program?q=${encodeURIComponent(querySnapshot)}&limit=10&wait=7000`).finally(() => {
-      deepProgramPromiseRef.current = null;
-    });
-    const result = await deepProgramPromiseRef.current.catch(() => null);
-    if (!result || querySnapshot !== latestQueryRef.current) return;
-    const nextQueue = result.queue || [];
-    if (nextQueue.length <= currentCount) return;
-    setRecommendations(nextQueue);
-    queueRef.current = nextQueue;
-    setProfile((current) => result.profile || current);
-    if (activeTrackRef.current) {
-      const refreshedActive = nextQueue.find((track) => track.id === activeTrackRef.current.id);
-      if (refreshedActive) setActiveTrack(refreshedActive);
+  async function rerollQueue() {
+    stopSpeechAndTimers();
+    primeAudioElement();
+    programPromiseRef.current = null;
+    const result = await loadRecommendations(query, { refresh: true, avoidCurrent: true, appendDjResponse: true });
+    if (result?.queue?.[0]) {
+      await playTrackAtIndex(0, result.queue);
     }
-    prewarmScriptAudio(nextQueue);
-    setStatus(`后台补齐完成：现在有 ${nextQueue.length} 首可播。`);
   }
 
   async function playSelectedTrack(track = activeTrack) {
@@ -311,7 +309,7 @@ function App() {
         await playMusicAudio(audioRef.current);
         setIsPlaying(true);
       } catch (error) {
-        setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
+        setStatus(playbackErrorStatus(error));
       }
     }
     await markPlayed(track.id);
@@ -351,7 +349,7 @@ function App() {
         await playMusicAudio(audioRef.current);
         setIsPlaying(true);
       } catch (error) {
-        setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
+        setStatus(playbackErrorStatus(error));
         setIsPlaying(false);
         return;
       }
@@ -459,6 +457,13 @@ function App() {
         audio.volume = isNarrating ? Math.min(musicVolume, currentTalkSegment?.musicVolume ?? 0.24) : musicVolume;
       }, 80);
     }
+  }
+
+  function playbackErrorStatus(error) {
+    if (/interact|gesture|allowed|permission/i.test(error?.message || "")) {
+      return "队列已排好。浏览器需要你再点一次播放键，我就从当前这首接着播。";
+    }
+    return `播放没有接上：${error?.message || "未知原因"}。请再点一次播放，或换一首 READY 歌曲。`;
   }
 
   function scheduleTalkover(track) {
@@ -682,7 +687,11 @@ function App() {
     if (!nextQuery) return;
     appendDialogueMessage("user", nextQuery);
     setPromptText("");
-    const dialogue = await fetchJson("/api/dialogue", {
+    const fallbackIntent = /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat";
+    if (fallbackIntent === "music") {
+      primeAudioElement();
+    }
+    const intentProbe = await fetchJson("/api/dialogue", {
       method: "POST",
       body: JSON.stringify({
         message: nextQuery,
@@ -691,23 +700,38 @@ function App() {
         queue: queueRef.current.slice(0, 8)
       })
     }).catch(() => ({
-      intent: /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat",
+      intent: fallbackIntent,
       reply: "我在。你这句我收到了。"
     }));
-    if (dialogue?.reply) {
-      appendDialogueMessage("dj", dialogue.reply);
-      setDjLine(dialogue.reply);
-    }
-    if (dialogue.intent === "chat") {
-      setStatus(dialogue.source === "llm" ? "Claudio 已回复。" : "Claudio 已用本地兜底回复。");
+    if (intentProbe.intent === "chat") {
+      if (intentProbe?.reply) {
+        appendDialogueMessage("dj", intentProbe.reply);
+        setDjLine(intentProbe.reply);
+      }
+      setStatus(intentProbe.source === "llm" ? "Claudio 已回复。" : "Claudio 已用本地兜底回复。");
       return;
     }
     stopSpeechAndTimers();
     programPromiseRef.current = null;
-    deepProgramPromiseRef.current = null;
     setQuery(nextQuery);
     latestQueryRef.current = nextQuery;
-    await loadRecommendations(nextQuery, { appendDjResponse: true });
+    const program = await loadRecommendations(nextQuery, { appendDjResponse: false, refresh: true, avoidCurrent: true });
+    const nextQueue = program?.queue || [];
+    const dialogue = await fetchJson("/api/dialogue", {
+      method: "POST",
+      body: JSON.stringify({
+        message: `${nextQuery}\n请只根据这次已经排好的播放列表回复，第一首必须是《${nextQueue[0]?.title || ""}》，后面可以提到：${nextQueue.slice(1, 4).map((track) => `《${track.title}》`).join("、")}。不要承诺播放列表里没有的歌。`,
+        query: nextQuery,
+        activeTrack: nextQueue[0] || null,
+        queue: nextQueue.slice(0, 8)
+      })
+    }).catch(() => null);
+    const reply = dialogue?.reply || buildProgramReadyReply(nextQueue);
+    appendDialogueMessage("dj", reply);
+    setDjLine(reply);
+    if (nextQueue[0]) {
+      await playTrackAtIndex(0, nextQueue);
+    }
   }
 
   function appendDialogueMessage(role, text) {
@@ -721,6 +745,15 @@ function App() {
         text: clean
       }
     ]);
+  }
+
+  function buildProgramReadyReply(queue) {
+    const first = queue?.[0];
+    const rest = (queue || []).slice(1, 4).map((track) => `《${track.title}》`).join("、");
+    if (!first) return "我试着换了一轮，但这次没有找到稳定可播的歌。换个说法，我再接。";
+    return rest
+      ? `好，这次真的换进播放列表了。先播《${first.title}》，后面接 ${rest}。`
+      : `好，这次真的换进播放列表了。先播《${first.title}》。`;
   }
 
   async function handleTransportPlay() {
@@ -814,161 +847,167 @@ function App() {
             </div>
           </header>
 
-          <div className="clockPanel">
-            <div className="clockDigits">{formatClock(clock)}</div>
-            <div className="clockMeta">
-              <div>{formatWeekday(clock)}</div>
-              <div>{formatDate(clock)}</div>
-              <div className="onAir">
-                <span className="liveDot" />
-                ON AIR
-              </div>
-            </div>
-          </div>
-
-          <div className="nowRail">
-            <div className="cover">
-              {resolvedTrack?.coverUrl ? <img src={resolvedTrack.coverUrl} alt="" /> : <span>{activeTrack ? activeTrack.title.slice(0, 2) : "C"}</span>}
-            </div>
-            <div className="nowCopy">
-              <p className="label">Now Playing</p>
-              <h2>{activeTrack?.title || "等待推荐"}</h2>
-              <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
-              <div className="scoreLine">
-                <span>{resolvedTrack || activeTrack?.playable ? "可播放" : "准备中"}</span>
-                <span>{isNarrating ? "口播中" : isPlaying ? "播放中" : "待播放"}</span>
-              </div>
-            </div>
-            <div className="transport">
-              <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
-              <button
-                type="button"
-                className="transportMain"
-                onClick={handleTransportPlay}
-                disabled={isLoadingQueue || Boolean(activeTrack && !activeTrack.resolvedTrack)}
-                aria-label={isPlaying ? "暂停" : "播放"}
-              >
-                {isPlaying ? "Ⅱ" : "▶"}
-              </button>
-              <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
-            </div>
-            <div className="volumeRow">
-              <span>VOL</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={musicVolume}
-                onChange={(event) => setMusicVolume(Number(event.target.value))}
-              />
-            </div>
-          </div>
-
-          <audio
-            ref={audioRef}
-            className="nativeAudioPlayer"
-            controls={Boolean(resolvedTrack?.streamUrl)}
-            src={resolvedTrack?.streamUrl ? toAudioSource(resolvedTrack.streamUrl) : undefined}
-            onPlay={handleNativeAudioPlay}
-            onEnded={handleTrackEnded}
-            preload="auto"
-            playsInline
-          />
-
-          <div className="liveDjPanel">
-            <div className="liveDjCopy">
-              <p className="label">{currentTalkSegment?.label || "Live DJ"}</p>
-              <p>{djLine}</p>
-            </div>
-            <div className="talkControls">
-              <button type="button" onClick={likeCurrentTrack} disabled={!activeTrack}>
-                喜欢
-              </button>
-              <button type="button" onClick={dislikeCurrentTrack} disabled={!activeTrack}>
-                少来
-              </button>
-              <button type="button" onClick={replayCurrentTalk} disabled={!djLine}>
-                重说
-              </button>
-              <button type="button" onClick={skipCurrentTalk} disabled={!isNarrating && !currentTalkSegment}>
-                跳过口播
-              </button>
-            </div>
-          </div>
-
-          <div className="handwrittenBlock">
-            <span className="handwritten">what's next on your mind</span>
-            <span className="handwrittenCn">你接下来在想什么</span>
-          </div>
-
-          <div className="dialoguePanel">
-            <div className="dialogueStack" aria-live="polite">
-              {dialogueMessages.map((message) => (
-                <div className={message.role === "user" ? "messageRow userMessageRow" : "messageRow"} key={message.id}>
-                  {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
-                  <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
-                    <p>{message.text}</p>
+          <div className="mainLayout">
+            <div className="playerColumn">
+              <div className="clockPanel">
+                <div className="clockDigits">{formatClock(clock)}</div>
+                <div className="clockMeta">
+                  <div>{formatWeekday(clock)}</div>
+                  <div>{formatDate(clock)}</div>
+                  <div className="onAir">
+                    <span className="liveDot" />
+                    ON AIR
                   </div>
-                  {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
                 </div>
-              ))}
-              <div ref={dialogueEndRef} />
-            </div>
-
-            <form className="promptRow" onSubmit={handlePromptSubmit}>
-              <input value={promptText} onChange={(event) => setPromptText(event.target.value)} placeholder={query || "跟 Claudio 说一句..."} />
-              <button type="submit" aria-label="生成队列">→</button>
-            </form>
-
-            <div className="footerBar">
-              <span>CLAUDIO FM</span>
-              <span>{isNarrating ? "TALKING" : isLoadingQueue ? "TUNING" : llmStatus?.configured ? "DEEPSEEK" : "RULES"}</span>
-            </div>
-            <p className="statusLine">{status}</p>
-          </div>
-
-          <div className="queuePanel">
-            <div className="queueHead">
-              <div>
-                <p className="label">Queue</p>
-                <h3>接下来要播什么</h3>
               </div>
-              <div className="queueActions">
-                <button type="button" onClick={() => loadRecommendations()}>重排</button>
-              </div>
-            </div>
-            <div className="queueList">
-              {isLoadingQueue && !recommendations.length ? (
-                <>
-                  <div className="queueSkeleton" />
-                  <div className="queueSkeleton" />
-                  <div className="queueSkeleton" />
-                </>
-              ) : null}
-              {recommendations.map((track, index) => (
-                <button
-                  className={activeTrack?.id === track.id ? "queueRow active" : "queueRow"}
-                  key={track.id}
-                  type="button"
-                  onClick={() => playTrackAtIndex(index, recommendations)}
-                >
-                  <span className="queueIndex">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="queueBody">
-                    <strong>{track.title}</strong>
-                    <small>{track.artist}</small>
-                  </span>
-                  <span className="queueMeta">
-                    {queueMetaFor(track)}
-                  </span>
-                </button>
-              ))}
-              {!isLoadingQueue && !recommendations.length ? (
-                <div className="emptyQueue">
-                  <strong>还没有稳定可播的队列</strong>
-                  <span>换一句状态，或导入你的歌单，我会重新找能播且贴近的歌。</span>
+
+              <div className="nowRail">
+                <div className="cover">
+                  {resolvedTrack?.coverUrl ? <img src={resolvedTrack.coverUrl} alt="" /> : <span>{activeTrack ? activeTrack.title.slice(0, 2) : "C"}</span>}
                 </div>
-              ) : null}
+                <div className="nowCopy">
+                  <p className="label">Now Playing</p>
+                  <h2>{activeTrack?.title || "等待推荐"}</h2>
+                  <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
+                  <div className="scoreLine">
+                    <span>{resolvedTrack || activeTrack?.playable ? "可播放" : "准备中"}</span>
+                    <span>{isNarrating ? "口播中" : isPlaying ? "播放中" : "待播放"}</span>
+                  </div>
+                </div>
+                <div className="transport">
+                  <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
+                  <button
+                    type="button"
+                    className="transportMain"
+                    onClick={handleTransportPlay}
+                    disabled={isLoadingQueue || Boolean(activeTrack && !activeTrack.resolvedTrack)}
+                    aria-label={isPlaying ? "暂停" : "播放"}
+                  >
+                    {isPlaying ? "Ⅱ" : "▶"}
+                  </button>
+                  <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
+                </div>
+                <div className="volumeRow">
+                  <span>VOL</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={musicVolume}
+                    onChange={(event) => setMusicVolume(Number(event.target.value))}
+                  />
+                </div>
+
+                <div className="queuePanel nowQueuePanel">
+                  <div className="queueHead">
+                    <div>
+                      <p className="label">Queue</p>
+                      <h3>接下来要播什么</h3>
+                    </div>
+                    <div className="queueActions">
+                      <button type="button" onClick={rerollQueue} disabled={isLoadingQueue}>重排</button>
+                    </div>
+                  </div>
+                  <div className="queueList">
+                    {isLoadingQueue && !recommendations.length ? (
+                      <>
+                        <div className="queueSkeleton" />
+                        <div className="queueSkeleton" />
+                        <div className="queueSkeleton" />
+                      </>
+                    ) : null}
+                    {recommendations.map((track, index) => (
+                      <button
+                        className={activeTrack?.id === track.id ? "queueRow active" : "queueRow"}
+                        key={track.id}
+                        type="button"
+                        onClick={() => playTrackAtIndex(index, recommendations)}
+                      >
+                        <span className="queueIndex">{String(index + 1).padStart(2, "0")}</span>
+                        <span className="queueBody">
+                          <strong>{track.title}</strong>
+                          <small>{track.artist}</small>
+                        </span>
+                        <span className="queueMeta">
+                          {queueMetaFor(track)}
+                        </span>
+                      </button>
+                    ))}
+                    {!isLoadingQueue && !recommendations.length ? (
+                      <div className="emptyQueue">
+                        <strong>还没有稳定可播的队列</strong>
+                        <span>换一句状态，或导入你的歌单，我会重新找能播且贴近的歌。</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <audio
+                ref={audioRef}
+                className="nativeAudioPlayer"
+                controls={Boolean(resolvedTrack?.streamUrl)}
+                src={resolvedTrack?.streamUrl ? toAudioSource(resolvedTrack.streamUrl) : undefined}
+                onPlay={handleNativeAudioPlay}
+                onEnded={handleTrackEnded}
+                preload="auto"
+                playsInline
+              />
+
+              <div className="liveDjPanel">
+                <div className="liveDjCopy">
+                  <p className="label">{currentTalkSegment?.label || "Live DJ"}</p>
+                  <p>{djLine}</p>
+                </div>
+                <div className="talkControls">
+                  <button type="button" onClick={likeCurrentTrack} disabled={!activeTrack}>
+                    喜欢
+                  </button>
+                  <button type="button" onClick={dislikeCurrentTrack} disabled={!activeTrack}>
+                    少来
+                  </button>
+                  <button type="button" onClick={replayCurrentTalk} disabled={!djLine}>
+                    重说
+                  </button>
+                  <button type="button" onClick={skipCurrentTalk} disabled={!isNarrating && !currentTalkSegment}>
+                    跳过口播
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="chatColumn">
+              <div className="handwrittenBlock">
+                <span className="handwritten">what's next on your mind</span>
+                <span className="handwrittenCn">你接下来在想什么</span>
+              </div>
+
+              <div className="dialoguePanel">
+                <div className="dialogueStack" aria-live="polite">
+                  {dialogueMessages.map((message) => (
+                    <div className={message.role === "user" ? "messageRow userMessageRow" : "messageRow"} key={message.id}>
+                      {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
+                      <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
+                        <p>{message.text}</p>
+                      </div>
+                      {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
+                    </div>
+                  ))}
+                  <div ref={dialogueEndRef} />
+                </div>
+
+                <form className="promptRow" onSubmit={handlePromptSubmit}>
+                  <input value={promptText} onChange={(event) => setPromptText(event.target.value)} placeholder={query || "跟 Claudio 说一句..."} />
+                  <button type="submit" aria-label="生成队列">→</button>
+                </form>
+
+                <div className="footerBar">
+                  <span>CLAUDIO FM</span>
+                  <span>{isNarrating ? "TALKING" : isLoadingQueue ? "TUNING" : llmStatus?.configured ? "DEEPSEEK" : "RULES"}</span>
+                </div>
+                <p className="statusLine">{status}</p>
+              </div>
             </div>
           </div>
 

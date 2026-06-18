@@ -133,11 +133,13 @@ export function summarizeProfile(profile = loadProfile(), graph = loadGraph()) {
   };
 }
 
-export function recommend({ query = "", limit = 16 } = {}) {
+export function recommend({ query = "", limit = 16, refreshSeed = "", avoidIds = [] } = {}) {
   const graph = loadGraph();
   const profile = loadProfile();
   const vectors = buildTasteVectors(profile, graph);
   const queryTokens = tokenize(query);
+  const avoidSet = new Set((Array.isArray(avoidIds) ? avoidIds : []).map((id) => String(id || "")).filter(Boolean));
+  const cleanRefreshSeed = cleanText(refreshSeed);
   const wantsChinese = /华语|中文|国语|粤语|下班|夜晚|松弛/.test(query) || (vectors.languages["华语"] || 0) + (vectors.languages["粤语"] || 0) > 8;
   const anchors = profile.importedTracks
     .map((track) => track.match?.songId && graph.byId.get(track.match.songId))
@@ -173,6 +175,7 @@ export function recommend({ query = "", limit = 16 } = {}) {
     .map((id) => {
       const song = graph.byId.get(id);
       if (!song) return null;
+      if (cleanRefreshSeed && avoidSet.has(song.id)) return null;
       let score = scores.get(id) || 0;
       if (isLikelyBadMainSong(song)) return null;
       if (wantsChinese && !isChineseSong(song)) return null;
@@ -189,6 +192,7 @@ export function recommend({ query = "", limit = 16 } = {}) {
       if (hasProviderCandidate(song)) score += 4;
       if (vectors.artists[normalizeArtist(song.artist)]) score += 8;
       if (recentIds.has(song.id)) score -= scores.has(song.id) ? 18 : 45;
+      if (cleanRefreshSeed) score += seededJitter(`${cleanRefreshSeed}:${song.id}`, 9);
       return {
         ...song,
         playable: Boolean(playableRecord?.streamUrl),
@@ -207,7 +211,8 @@ export function recommend({ query = "", limit = 16 } = {}) {
     query,
     anchors: anchors.slice(0, 20).map((song) => ({ id: song.id, title: song.title, artist: song.artist })),
     profile: summarizeProfile(profile, graph),
-    recommendations: ranked
+    recommendations: ranked,
+    refreshSeed: cleanRefreshSeed
   };
 }
 
@@ -377,6 +382,19 @@ function tokenize(value) {
     .split(/[\s,，.。/|｜:：;；\-_—()[\]【】"'“”‘’]+/)
     .map((item) => item.trim())
     .filter((item) => item.length >= 2);
+}
+
+function seededJitter(seedText, range) {
+  return (hashText(seedText) / 0xffffffff - 0.5) * range;
+}
+
+function hashText(text) {
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 function normalizeSongTitle(value = "") {

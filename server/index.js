@@ -260,7 +260,15 @@ app.get("/api/program", async (req, res) => {
     const limit = Math.min(10, Math.max(1, Number(req.query.limit || 6)));
     const requestedWait = Number(req.query.wait || 0);
     const maxWaitMs = Number.isFinite(requestedWait) ? Math.min(8000, Math.max(0, requestedWait)) : 0;
-    const program = await buildRadioProgram({ query, limit, maxWaitMs });
+    const refreshSeed = String(req.query.refresh || "");
+    const requestedScriptWait = Number(req.query.scriptWait || (refreshSeed ? 1200 : 4200));
+    const scriptBudgetMs = Number.isFinite(requestedScriptWait) ? Math.min(7000, Math.max(0, requestedScriptWait)) : 4200;
+    const avoidIds = String(req.query.avoid || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean)
+      .slice(0, 30);
+    const program = await buildRadioProgram({ query, limit, maxWaitMs, refreshSeed, avoidIds, scriptBudgetMs });
     res.json(program);
   } catch (error) {
     res.status(503).json({ error: error.message });

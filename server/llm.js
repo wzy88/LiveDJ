@@ -92,7 +92,7 @@ export async function generateDialogueReplyWithLlm({ message, query, profile, ac
   }
 }
 
-export async function generateTalkScriptWithLlm({ track, context, fallbackScript }) {
+export async function generateTalkScriptWithLlm({ track, context, fallbackScript, timeoutMs = 7000 }) {
   if (!isLlmConfigured()) return null;
   const config = getLlmConfig();
   const payload = {
@@ -168,7 +168,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
         Authorization: `Bearer ${config.apiKey}`
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(7000)
+      signal: AbortSignal.timeout(Math.max(500, timeoutMs))
     });
     if (!response.ok) return null;
     const data = await response.json();

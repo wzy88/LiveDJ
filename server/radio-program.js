@@ -3,12 +3,13 @@ import { resolvePlayableTrack } from "./music.js";
 import { getCleanPlayableRecord } from "./playable-index.js";
 import { generateTalkScriptWithLlm } from "./llm.js";
 
-export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 } = {}) {
+export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, refreshSeed = "", avoidIds = [], scriptBudgetMs = 4200 } = {}) {
   const profile = loadProfile();
-  const raw = recommend({ query, limit: Math.max(24, limit * 6) });
+  const candidateLimit = refreshSeed || avoidIds.length ? Math.max(90, limit * 10) : Math.max(24, limit * 6);
+  const raw = recommend({ query, limit: candidateLimit, refreshSeed, avoidIds });
   const queue = [];
   const rejected = [];
-  const candidates = (raw.recommendations || []).slice(0, Math.max(24, limit * 5));
+  const candidates = (raw.recommendations || []).slice(0, Math.max(24, candidateLimit));
   const usedIds = new Set();
   for (const track of candidates) {
     const cached = getCleanPlayableRecord(track.id, track);
@@ -44,7 +45,7 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0 }
     rejected.push({ id: track.id, title: track.title, artist: track.artist, reason: "本轮时间内未完成解析" });
   }
 
-  await enrichQueueScripts(queue, { query, profile, anchors: raw.anchors || [] });
+  await enrichQueueScripts(queue, { query, profile, anchors: raw.anchors || [], budgetMs: scriptBudgetMs });
   attachProgramFlow(queue, { query, profile, anchors: raw.anchors || [] });
 
   return {
@@ -79,11 +80,20 @@ function pushPlayable(queue, track, resolvedTrack, context) {
 
 async function enrichQueueScripts(queue, context) {
   const recentLines = [];
+  const startedAt = Date.now();
+  const budgetMs = Math.max(0, Number(context.budgetMs) || 0);
   for (const [index, track] of queue.slice(0, 6).entries()) {
+    const elapsed = Date.now() - startedAt;
+    const timeLeft = budgetMs - elapsed;
+    if (timeLeft < 650) {
+      recentLines.push(...(track.script?.lines || []));
+      continue;
+    }
     const script = await generateTalkScriptWithLlm({
       track,
       context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null, recentLines },
-      fallbackScript: track.script
+      fallbackScript: track.script,
+      timeoutMs: Math.min(2400, timeLeft)
     });
     if (script) {
       track.script = script;
