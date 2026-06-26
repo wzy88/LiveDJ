@@ -1,18 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { mergeQueueAfterCurrent, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
+const liveDjPageChars = 96;
 
 function App() {
   const [graphStats, setGraphStats] = useState(null);
   const [profile, setProfile] = useState(null);
   const [importMode, setImportMode] = useState("link");
   const [playlistUrl, setPlaylistUrl] = useState("");
+  const [playlistText, setPlaylistText] = useState("");
   const [playlistImageDataUrl, setPlaylistImageDataUrl] = useState("");
   const [playlistImageName, setPlaylistImageName] = useState("");
   const [query, setQuery] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
-  const [promptText, setPromptText] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
+  const [promptText, setPromptText] = useState("");
   const [recommendations, setRecommendations] = useState([]);
   const [activeTrack, setActiveTrack] = useState(null);
   const [resolvedTrack, setResolvedTrack] = useState(null);
@@ -24,11 +27,20 @@ function App() {
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
+  const [isLlmPanelOpen, setIsLlmPanelOpen] = useState(false);
+  const [isSavingLlm, setIsSavingLlm] = useState(false);
+  const [llmStatus, setLlmStatus] = useState(null);
+  const [llmApiKey, setLlmApiKey] = useState("");
+  const [llmModel, setLlmModel] = useState("deepseek-chat");
+  const [llmApiBase, setLlmApiBase] = useState("https://api.deepseek.com");
   const [musicVolume, setMusicVolume] = useState(0.88);
   const [djLine, setDjLine] = useState("把你的想法丢给我，我来接歌。");
+  const [djPageIndex, setDjPageIndex] = useState(0);
+  const [currentTalkSegment, setCurrentTalkSegment] = useState(null);
   const [dialogueMessages, setDialogueMessages] = useState([
     { id: "dj-initial", role: "dj", text: "把你的想法丢给我，我来接歌。" }
   ]);
+  const [pendingQueueRequest, setPendingQueueRequest] = useState(null);
 
   const audioRef = useRef(null);
   const voiceRef = useRef(null);
@@ -37,10 +49,12 @@ function App() {
   const talkTimersRef = useRef([]);
   const silentUrlRef = useRef("");
   const programPromiseRef = useRef(null);
-  const deepProgramPromiseRef = useRef(null);
   const speechSeqRef = useRef(0);
   const latestQueryRef = useRef(query);
   const activeTrackRef = useRef(activeTrack);
+  const dialogueEndRef = useRef(null);
+  const scheduledTalkTrackIdRef = useRef("");
+  const playedFeedbackRef = useRef(new Set());
 
   useEffect(() => {
     refreshAll();
@@ -59,9 +73,32 @@ function App() {
   }, [activeTrack]);
 
   useEffect(() => {
+    dialogueEndRef.current?.scrollIntoView({ block: "end" });
+  }, [dialogueMessages]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 15000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const djLinePages = useMemo(() => splitTalkPages(djLine, liveDjPageChars), [djLine]);
+  const visibleDjLine = djLinePages[djPageIndex] || djLinePages[0] || "";
+
+  useEffect(() => {
+    setDjPageIndex(0);
+  }, [djLine]);
+
+  useEffect(() => {
+    if (djLinePages.length <= 1) return undefined;
+    const page = djLinePages[djPageIndex] || "";
+    const delay = isNarrating
+      ? Math.max(2800, Math.min(7600, page.length * 190))
+      : Math.max(4200, Math.min(9200, page.length * 240));
+    const timer = window.setTimeout(() => {
+      setDjPageIndex((index) => (index + 1) % djLinePages.length);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [djLinePages, djPageIndex, isNarrating]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -82,19 +119,22 @@ function App() {
 
   useEffect(() => {
     if (audioRef.current) {
-      audioRef.current.volume = isNarrating ? Math.min(musicVolume, 0.24) : musicVolume;
+      const duckVolume = currentTalkSegment?.musicVolume ?? 0.24;
+      audioRef.current.volume = isNarrating ? Math.min(musicVolume, duckVolume) : musicVolume;
     }
-  }, [isNarrating, musicVolume]);
+  }, [currentTalkSegment, isNarrating, musicVolume]);
 
   useEffect(() => {
     return () => stopSpeechAndTimers();
   }, []);
 
   async function refreshAll() {
-    const [stats, profileResult] = await Promise.all([
+    const [health, stats, profileResult] = await Promise.all([
+      fetchJson("/api/health").catch(() => null),
       fetchJson("/api/graph/stats").catch((error) => ({ error: error.message })),
       fetchJson("/api/profile").catch(() => null)
     ]);
+    setLlmStatus(health?.llm || null);
     setGraphStats(stats);
     setProfile(profileResult);
     if (stats?.error) {
@@ -111,12 +151,14 @@ function App() {
     try {
       const result = importMode === "screenshot"
         ? await importPlaylistScreenshot()
-        : await importPlaylistLink();
+        : importMode === "text"
+          ? await importPlaylistText()
+          : await importPlaylistLink();
       const extractedCount = result.source?.extractedCount || result.importedCount || 0;
       setProfile(result);
-      appendDialogueMessage("user", importMode === "screenshot" ? `上传了一张歌单截图` : `导入了一个歌单链接`);
-      appendDialogueMessage("dj", `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount} 首。现在按你的歌单重排。`);
-      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首，可播解析 ${result.resolvedCount || 0} 首。`);
+      appendDialogueMessage("user", importMode === "screenshot" ? "上传了一张歌单截图" : importMode === "text" ? "粘贴了一段歌单文字" : "导入了一个歌单链接");
+      appendDialogueMessage("dj", buildImportSummary(result, extractedCount));
+      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；我会用这些口味信号找稳定可播的队列。`);
       await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
       setIsImportPanelOpen(false);
     } catch (error) {
@@ -127,12 +169,45 @@ function App() {
     }
   }
 
+  async function saveLlmConfig() {
+    setIsSavingLlm(true);
+    setStatus("正在保存 DeepSeek 配置...");
+    try {
+      const result = await fetchJson("/api/llm/config", {
+        method: "POST",
+        body: JSON.stringify({
+          apiKey: llmApiKey,
+          model: llmModel,
+          apiBase: llmApiBase
+        })
+      });
+      setLlmStatus(result.llm);
+      setLlmApiKey("");
+      setIsLlmPanelOpen(false);
+      setStatus(result.llm?.configured ? `DeepSeek 已连接：${result.llm.model}` : "DeepSeek 配置未生效。");
+      appendDialogueMessage("dj", "DeepSeek 已经接上了。之后我的闲聊和口播会优先走模型，不再靠本地模板硬撑。");
+    } catch (error) {
+      setStatus(`DeepSeek 保存失败：${error.message}`);
+    } finally {
+      setIsSavingLlm(false);
+    }
+  }
+
   async function importPlaylistLink() {
     const url = playlistUrl.trim();
     if (!url) throw new Error("请先粘贴歌单链接。");
     return fetchJson("/api/profile/import-link", {
       method: "POST",
       body: JSON.stringify({ url })
+    });
+  }
+
+  async function importPlaylistText() {
+    const text = playlistText.trim();
+    if (!text) throw new Error("请先粘贴歌单文字，每行像“歌名 - 歌手”。");
+    return fetchJson("/api/profile/import", {
+      method: "POST",
+      body: JSON.stringify({ text })
     });
   }
 
@@ -165,32 +240,56 @@ function App() {
 
   async function loadRecommendations(queryOverride = query, options = {}) {
     const effectiveQuery = String(queryOverride || "").trim();
-    if (!programPromiseRef.current) {
-      programPromiseRef.current = fetchJson(`/api/program?q=${encodeURIComponent(effectiveQuery)}&limit=10&wait=6500`).finally(() => {
+    const refreshSeed = options.refresh ? `${Date.now()}-${Math.random().toString(16).slice(2)}` : "";
+    const avoidIds = options.avoidCurrent ? queueRef.current.map((track) => track.id).filter(Boolean).slice(0, 6) : [];
+    const requestKey = JSON.stringify({ q: effectiveQuery, refreshSeed, avoidIds });
+    if (!programPromiseRef.current || programPromiseRef.current.key !== requestKey) {
+      const params = new URLSearchParams({
+        q: effectiveQuery,
+        limit: "10",
+        wait: options.refresh ? "3600" : "6500",
+        scriptWait: options.refresh ? "7000" : "18000"
+      });
+      if (refreshSeed) params.set("refresh", refreshSeed);
+      if (avoidIds.length) params.set("avoid", avoidIds.join(","));
+      const promise = fetchJson(`/api/program?${params.toString()}`).finally(() => {
         programPromiseRef.current = null;
       });
+      programPromiseRef.current = { key: requestKey, promise };
     }
     setStatus("正在生成可播队列...");
     setIsLoadingQueue(true);
     try {
-      const result = await programPromiseRef.current;
+      const result = await programPromiseRef.current.promise;
       const nextQueue = result.queue || [];
-      setRecommendations(nextQueue);
-      queueRef.current = nextQueue;
+      const mergedQueue = options.appendAfterCurrent
+        ? mergeQueueAfterCurrent(queueRef.current, nextQueue, currentIndex)
+        : nextQueue;
+      setRecommendations(mergedQueue);
+      queueRef.current = mergedQueue;
       setProfile(result.profile || profile);
-      if (nextQueue[0]) {
+      if (options.appendAfterCurrent && activeTrackRef.current) {
+        setStatus(nextQueue.length ? `已把 ${nextQueue.length} 首接到当前歌曲后面。` : "这次没有找到稳定可播的后续歌曲。");
+        if (options.appendDjResponse) {
+          appendDialogueMessage("dj", buildProgramReadyReply(nextQueue, { mode: "append" }));
+        }
+        prewarmScriptAudio(mergedQueue);
+      } else if (nextQueue[0]) {
         setCurrentIndex(0);
         setActiveTrack(nextQueue[0]);
         setResolvedTrack(nextQueue[0].resolvedTrack || null);
         setDjLine(nextQueue[0].script?.opening || "新的电台队列已经排好。");
         if (options.appendDjResponse) {
-          appendDialogueMessage("dj", nextQueue[0].script?.opening || "我按这句话重新排好了。");
+          appendDialogueMessage("dj", buildProgramReadyReply(nextQueue));
         }
         prewarmScriptAudio(nextQueue);
+      } else {
+        setActiveTrack(null);
+        setResolvedTrack(null);
+        setDjLine("这次没有找到稳定可播的歌。我会更保守一点，你也可以换个状态词或者导入更多歌。");
       }
-      setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放，后台继续补齐队列。` : "这次候选都没有通过可播验证，正在后台继续补。");
-      if (nextQueue.length < 8) {
-        fillQueueInBackground(effectiveQuery, nextQueue.length);
+      if (!options.appendAfterCurrent) {
+        setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
       }
       return result;
     } finally {
@@ -198,34 +297,24 @@ function App() {
     }
   }
 
-  async function fillQueueInBackground(querySnapshot, currentCount) {
-    if (deepProgramPromiseRef.current) return;
-    deepProgramPromiseRef.current = fetchJson(`/api/program?q=${encodeURIComponent(querySnapshot)}&limit=10&wait=7000`).finally(() => {
-      deepProgramPromiseRef.current = null;
-    });
-    const result = await deepProgramPromiseRef.current.catch(() => null);
-    if (!result || querySnapshot !== latestQueryRef.current) return;
-    const nextQueue = result.queue || [];
-    if (nextQueue.length <= currentCount) return;
-    setRecommendations(nextQueue);
-    queueRef.current = nextQueue;
-    setProfile((current) => result.profile || current);
-    if (activeTrackRef.current) {
-      const refreshedActive = nextQueue.find((track) => track.id === activeTrackRef.current.id);
-      if (refreshedActive) setActiveTrack(refreshedActive);
+  async function rerollQueue() {
+    stopSpeechAndTimers();
+    primeAudioElement();
+    programPromiseRef.current = null;
+    const result = await loadRecommendations(query, { refresh: true, avoidCurrent: true, appendDjResponse: true });
+    if (result?.queue?.[0]) {
+      await playTrackAtIndex(0, result.queue);
     }
-    prewarmScriptAudio(nextQueue);
-    setStatus(`后台补齐完成：现在有 ${nextQueue.length} 首可播。`);
   }
 
   async function playSelectedTrack(track = activeTrack) {
     if (!track) return;
-    primeAudioElement();
     const index = queueRef.current.findIndex((item) => item.id === track.id);
     if (track.resolvedTrack && index >= 0) {
       await playTrackAtIndex(index, queueRef.current);
       return;
     }
+    primeAudioElement();
     setActiveTrack(track);
     setResolvedTrack(null);
     setStatus(`正在验证可播音源：${track.title} - ${track.artist}`);
@@ -251,73 +340,88 @@ function App() {
       audioRef.current.muted = false;
       audioRef.current.volume = musicVolume;
       try {
-        await waitForAudioReady(audioRef.current);
-        await audioRef.current.play();
+        await playMusicAudio(audioRef.current);
         setIsPlaying(true);
       } catch (error) {
-        setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
+        setStatus(playbackErrorStatus(error));
       }
     }
-    await sendFeedback(track.id, "played", false);
+    await markPlayed(track.id);
   }
 
   async function startRadio() {
-    primeAudioElement();
     if (recommendations?.[0]) {
       await playTrackAtIndex(0, recommendations);
       return;
     }
-    const program = await loadRecommendations();
-    if (program?.queue?.[0]) {
-      await playTrackAtIndex(0, program.queue);
+    if (!isLoadingQueue) {
+      loadRecommendations();
     }
+    setStatus("正在准备可播队列，READY 后再点播放。");
   }
 
-  async function playTrackAtIndex(index, queue = queueRef.current) {
+  async function playTrackAtIndex(index, queue = queueRef.current, options = {}) {
     const safeIndex = index < 0 ? 0 : index;
     const track = queue[safeIndex];
     if (!track?.resolvedTrack) {
       setStatus("这首还没有准备好可播音源。");
       return;
     }
-    primeAudioElement();
     stopSpeechAndTimers();
     setCurrentIndex(safeIndex);
     setActiveTrack(track);
     setResolvedTrack(track.resolvedTrack);
     setDjLine(track.script?.opening || `正在播放《${track.title}》。`);
     setStatus(`正在播放：${track.title} - ${track.artist}`);
-    if (audioRef.current) {
-      audioRef.current.src = toAudioSource(track.resolvedTrack.streamUrl);
-      audioRef.current.load();
-      audioRef.current.loop = false;
-      audioRef.current.muted = false;
-      audioRef.current.volume = musicVolume;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.src = toAudioSource(track.resolvedTrack.streamUrl);
+      audio.load();
+      audio.loop = false;
+      audio.muted = false;
+      audio.preload = "auto";
+      audio.volume = musicVolume;
       try {
-        await waitForAudioReady(audioRef.current);
-        await audioRef.current.play();
+        await playMusicAudio(audio, {
+          allowMutedAutoplayRetry: Boolean(options.allowMutedAutoplayRetry)
+        });
         setIsPlaying(true);
       } catch (error) {
-        setStatus(`播放失败：${error.message}。请再点一次播放，或换一首 READY 歌曲。`);
+        setStatus(playbackErrorStatus(error));
         setIsPlaying(false);
         return;
       }
     }
     scheduleTalkover(track);
-    await sendFeedback(track.id, "played", false);
+    await markPlayed(track.id);
+  }
+
+  async function continuePlaybackFromIndex(startIndex, queue = queueRef.current) {
+    const safeStart = Math.max(0, Number(startIndex) || 0);
+    for (let index = safeStart; index < queue.length; index += 1) {
+      const track = queue[index];
+      if (!track?.resolvedTrack?.streamUrl) continue;
+      await playTrackAtIndex(index, queue, { allowMutedAutoplayRetry: true });
+      return true;
+    }
+    setStatus("后面暂时没有可播音源，我正在重新排一段。");
+    return false;
   }
 
   async function handleTrackEnded() {
     stopSpeechAndTimers();
+    if (activeTrack?.id) {
+      sendFeedback(activeTrack.id, "complete", false).catch(() => {});
+    }
     const nextIndex = currentIndex + 1;
     const queue = queueRef.current;
     if (queue[nextIndex]) {
-      await playTrackAtIndex(nextIndex, queue);
+      await continuePlaybackFromIndex(nextIndex, queue);
       return;
     }
     const program = await loadRecommendations();
-    if (program?.queue?.[0]) {
-      await playTrackAtIndex(0, program.queue);
+    if (program?.queue?.length) {
+      await continuePlaybackFromIndex(0, program.queue);
     }
   }
 
@@ -325,6 +429,7 @@ function App() {
     speechSeqRef.current += 1;
     talkTimersRef.current.forEach((timer) => clearTimeout(timer));
     talkTimersRef.current = [];
+    scheduledTalkTrackIdRef.current = "";
     if (voiceRef.current) {
       voiceRef.current.pause();
       voiceRef.current.onended = null;
@@ -338,6 +443,7 @@ function App() {
       window.speechSynthesis.cancel();
     }
     setIsNarrating(false);
+    setCurrentTalkSegment(null);
   }
 
   function primeAudioElement() {
@@ -385,26 +491,78 @@ function App() {
     return `${apiBase}/api/audio?url=${encodeURIComponent(url)}`;
   }
 
+  async function playMusicAudio(audio, { allowMutedAutoplayRetry = false } = {}) {
+    try {
+      audio.muted = false;
+      await audio.play();
+      return;
+    } catch (error) {
+      if (!allowMutedAutoplayRetry || !/interact|gesture|allowed|permission/i.test(error.message || "")) {
+        throw error;
+      }
+      audio.muted = true;
+      await audio.play();
+      window.setTimeout(() => {
+        audio.muted = false;
+        audio.volume = isNarrating ? Math.min(musicVolume, currentTalkSegment?.musicVolume ?? 0.24) : musicVolume;
+      }, 80);
+    }
+  }
+
+  function playbackErrorStatus(error) {
+    if (/interact|gesture|allowed|permission/i.test(error?.message || "")) {
+      return "队列已排好。浏览器需要你再点一次播放键，我就从当前这首接着播。";
+    }
+    return `播放没有接上：${error?.message || "未知原因"}。请再点一次播放，或换一首 READY 歌曲。`;
+  }
+
   function scheduleTalkover(track) {
     const script = track.script;
     if (!script) return;
+    if (scheduledTalkTrackIdRef.current === track.id) return;
+    scheduledTalkTrackIdRef.current = track.id;
     const durationMs = Math.max(120000, Math.round((track.resolvedTrack?.durationSec || track.durationSec || 220) * 1000));
-    const points = [
-      1500,
-      Math.min(Math.max(25000, durationMs * 0.3), durationMs - 65000),
-      Math.min(Math.max(65000, durationMs * 0.64), durationMs - 12000)
-    ].filter((value, index, arr) => Number.isFinite(value) && value > 0 && arr.indexOf(value) === index);
-    const lines = [script.opening, ...(script.bridges || [])].filter(Boolean).slice(0, points.length);
-    lines.forEach((line, index) => {
+    const stages = Array.isArray(script.stages) && script.stages.length
+      ? script.stages
+      : buildFallbackTalkStages(script, track);
+    stages.forEach((stage) => {
+      const offset = resolveTalkOffset(stage, durationMs);
+      if (!Number.isFinite(offset) || offset < 0 || offset > durationMs - 2500) return;
       talkTimersRef.current.push(
-        window.setTimeout(() => speakOverMusic(line), Math.max(0, points[index]))
+        window.setTimeout(() => speakOverMusic(stage.text, stage), Math.max(0, offset))
       );
     });
   }
 
-  async function speakOverMusic(text) {
+  function buildFallbackTalkStages(script, track) {
+    return [
+      { id: `${track.id}:intro`, type: "intro", label: "口播 1/3", text: script.opening, position: "start", offsetMs: 1400, musicVolume: 0.22 },
+      { id: `${track.id}:bridge-a`, type: "bridge", label: "口播 2/3", text: script.bridges?.[0], position: "percent", percent: 0.31, minMs: 26000, maxBeforeEndMs: 65000, musicVolume: 0.2 },
+      { id: `${track.id}:bridge-b`, type: "bridge", label: "口播 3/3", text: script.bridges?.[1], position: "percent", percent: 0.64, minMs: 62000, maxBeforeEndMs: 26000, musicVolume: 0.2 },
+      { id: `${track.id}:next-tease`, type: "next", label: "下一首串联", text: script.nextTease, position: "beforeEnd", beforeEndMs: 15000, minMs: 90000, musicVolume: 0.18 }
+    ].filter((stage) => stage.text);
+  }
+
+  function resolveTalkOffset(stage, durationMs) {
+    if (!stage) return null;
+    if (stage.position === "beforeEnd") {
+      const preferred = durationMs - (stage.beforeEndMs || 15000);
+      return Math.max(stage.minMs || 0, preferred);
+    }
+    if (stage.position === "percent") {
+      const byPercent = durationMs * (Number(stage.percent) || 0.35);
+      const min = stage.minMs || 0;
+      const max = durationMs - (stage.maxBeforeEndMs || 20000);
+      return Math.min(Math.max(min, byPercent), max);
+    }
+    return stage.offsetMs || 0;
+  }
+
+  async function speakOverMusic(text, segment = null) {
     if (typeof window === "undefined" || !text) return;
     const token = ++speechSeqRef.current;
+    const nextSegment = segment ? { ...segment, text } : { id: `manual-${token}`, type: "manual", label: "口播", text, musicVolume: 0.22 };
+    setCurrentTalkSegment(nextSegment);
     setDjLine(text);
     setStatus("正在准备口播...");
     try {
@@ -439,11 +597,12 @@ function App() {
       voiceAudio.onplaying = () => {
         if (token !== speechSeqRef.current) return;
         setIsNarrating(true);
-        setStatus("口播中...");
+        setStatus(`${nextSegment.label || "口播"}中...`);
       };
       voiceAudio.onended = () => {
         if (token !== speechSeqRef.current) return;
         setIsNarrating(false);
+        setCurrentTalkSegment(null);
         setStatus("电台继续播放中。");
         if (voiceUrlRef.current) {
           URL.revokeObjectURL(voiceUrlRef.current);
@@ -453,6 +612,7 @@ function App() {
       voiceAudio.onerror = () => {
         if (token !== speechSeqRef.current) return;
         setIsNarrating(false);
+        setCurrentTalkSegment(null);
         setStatus("口播播放失败，已回到音乐。");
       };
       await voiceAudio.play();
@@ -463,11 +623,14 @@ function App() {
         return;
       }
       setIsNarrating(false);
+      setCurrentTalkSegment(null);
       setStatus(`口播失败：${error.message}`);
     }
   }
 
   function playFallbackSpeech(text, token) {
+    const fallbackSegment = currentTalkSegment || { id: `fallback-${token}`, type: "fallback", label: "口播", text, musicVolume: 0.22 };
+    setCurrentTalkSegment(fallbackSegment);
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "zh-CN";
     utterance.rate = 1.0;
@@ -479,16 +642,18 @@ function App() {
     utterance.onstart = () => {
       if (token !== speechSeqRef.current) return;
       setIsNarrating(true);
-      setStatus("口播中...");
+      setStatus(`${fallbackSegment.label || "口播"}中...`);
     };
     utterance.onend = () => {
       if (token !== speechSeqRef.current) return;
       setIsNarrating(false);
+      setCurrentTalkSegment(null);
       setStatus("电台继续播放中。");
     };
     utterance.onerror = () => {
       if (token !== speechSeqRef.current) return;
       setIsNarrating(false);
+      setCurrentTalkSegment(null);
       setStatus("口播播放失败，已回到音乐。");
     };
     window.speechSynthesis.cancel();
@@ -498,9 +663,9 @@ function App() {
   function prewarmScriptAudio(queue) {
     const lines = queue
       .slice(0, 2)
-      .map((track) => track.script?.opening)
+      .flatMap((track) => (track.script?.stages || [{ text: track.script?.opening }]).map((stage) => stage.text))
       .filter(Boolean);
-    for (const line of lines) {
+    for (const line of lines.slice(0, 5)) {
       fetch(`${apiBase}/api/tts`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -515,31 +680,33 @@ function App() {
     }
   }
 
-  function waitForAudioReady(audio) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const cleanup = () => {
-        audio.removeEventListener("canplay", onReady);
-        audio.removeEventListener("loadedmetadata", onReady);
-        audio.removeEventListener("canplaythrough", onReady);
-        clearTimeout(timer);
-      };
-      const onReady = () => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-      const timer = window.setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      }, 7000);
-      audio.addEventListener("canplay", onReady, { once: true });
-      audio.addEventListener("loadedmetadata", onReady, { once: true });
-      audio.addEventListener("canplaythrough", onReady, { once: true });
-    });
+  async function replayCurrentTalk() {
+    const segment = currentTalkSegment || activeTrack?.script?.stages?.[0] || null;
+    const text = segment?.text || djLine;
+    if (!text) return;
+    await speakOverMusic(text, segment || { id: "manual-replay", label: "重说口播", text, musicVolume: 0.22 });
+    if (activeTrack?.id) sendFeedback(activeTrack.id, "replay", false).catch(() => {});
+  }
+
+  async function likeCurrentTrack() {
+    if (!activeTrack?.id) return;
+    await sendFeedback(activeTrack.id, "like", false);
+    setStatus(`记住了：以后多放一点像《${activeTrack.title}》这样的歌。`);
+    appendDialogueMessage("dj", `好，我会把《${activeTrack.title}》这一类权重调高一点。`);
+  }
+
+  async function dislikeCurrentTrack() {
+    if (!activeTrack?.id) return;
+    await sendFeedback(activeTrack.id, "dislike", false);
+    setStatus(`收到：以后少放一点像《${activeTrack.title}》这样的歌。`);
+    appendDialogueMessage("dj", `收到，这类我会少放一点，下一首换个方向。`);
+    await handleNext();
+  }
+
+  function skipCurrentTalk() {
+    if (!isNarrating && !currentTalkSegment) return;
+    stopSpeechAndTimers();
+    setStatus("已跳过当前口播，音乐继续。");
   }
 
   async function sendFeedback(songId, signal, reload = true) {
@@ -551,23 +718,104 @@ function App() {
     if (reload) await loadRecommendations();
   }
 
+  async function markPlayed(songId) {
+    if (!songId || playedFeedbackRef.current.has(songId)) return;
+    playedFeedbackRef.current.add(songId);
+    await sendFeedback(songId, "played", false);
+  }
+
+  function handleNativeAudioPlay() {
+    setIsPlaying(true);
+    if (!activeTrack?.resolvedTrack) return;
+    scheduleTalkover(activeTrack);
+    markPlayed(activeTrack.id).catch(() => {});
+  }
+
   async function handlePromptSubmit(event) {
     event.preventDefault();
     const nextQuery = promptText.trim();
     if (!nextQuery) return;
-    stopSpeechAndTimers();
-    programPromiseRef.current = null;
-    deepProgramPromiseRef.current = null;
-    setQuery(nextQuery);
-    latestQueryRef.current = nextQuery;
     appendDialogueMessage("user", nextQuery);
-    appendDialogueMessage("dj", "我正在看你的歌单画像和这次的状态，马上接一段能播的。");
-    setDjLine("我正在看你的歌单画像和这次的状态，马上接一段能播的。");
     setPromptText("");
-    await loadRecommendations(nextQuery, { appendDjResponse: true });
+    const fallbackIntent = /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat";
+    if (fallbackIntent === "music") {
+      primeAudioElement();
+    }
+    const intentProbe = await fetchJson("/api/dialogue", {
+      method: "POST",
+      body: JSON.stringify({
+        message: nextQuery,
+        query,
+        activeTrack,
+        queue: queueRef.current.slice(0, 8)
+      })
+    }).catch(() => ({
+      intent: fallbackIntent,
+      reply: "我在。你这句我收到了。"
+    }));
+    const isMusicIntent = intentProbe.intent === "music" || intentProbe.intent === "mixed" || fallbackIntent === "music";
+    if (intentProbe.intent === "chat") {
+      if (intentProbe?.reply) {
+        appendDialogueMessage("dj", intentProbe.reply);
+        setDjLine(intentProbe.reply);
+      }
+      setStatus(intentProbe.source === "llm" ? "Claudio 已回复。" : "Claudio 已用本地兜底回复。");
+      return;
+    }
+    if (!isMusicIntent) return;
+    const queueAction = resolveQueueRequestAction(nextQuery, {
+      hasActiveTrack: Boolean(activeTrack)
+    });
+    if (queueAction === "ask") {
+      const pending = {
+        id: `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        query: nextQuery
+      };
+      setPendingQueueRequest(pending);
+      appendDialogueMessage("dj", `我听懂了，你想接一段新的方向。要现在切过去，还是等《${activeTrack?.title || "当前这首"}》播完再接上？`, {
+        actionPromptId: pending.id
+      });
+      setStatus("等待你选择：立即切换，或播完当前这首再接上。");
+      return;
+    }
+    await applyQueueRequest(nextQuery, {
+      mode: queueAction === "append" ? "append" : "replace"
+    });
   }
 
-  function appendDialogueMessage(role, text) {
+  async function applyQueueRequest(nextQuery, { mode = "replace" } = {}) {
+    const appendAfterCurrent = mode === "append";
+    if (!appendAfterCurrent) {
+      primeAudioElement();
+      stopSpeechAndTimers();
+    }
+    programPromiseRef.current = null;
+    setQuery(nextQuery);
+    latestQueryRef.current = nextQuery;
+    const program = await loadRecommendations(nextQuery, {
+      appendDjResponse: false,
+      refresh: true,
+      avoidCurrent: true,
+      appendAfterCurrent
+    });
+    const nextQueue = program?.queue || [];
+    const reply = buildProgramReadyReply(nextQueue, { mode });
+    appendDialogueMessage("dj", reply);
+    setDjLine(reply);
+    if (!appendAfterCurrent && nextQueue.length) {
+      await continuePlaybackFromIndex(0, nextQueue);
+    }
+  }
+
+  async function resolvePendingQueueRequest(mode) {
+    if (!pendingQueueRequest?.query) return;
+    const pending = pendingQueueRequest;
+    setPendingQueueRequest(null);
+    appendDialogueMessage("user", mode === "append" ? "播完这首再接上" : "现在切过去");
+    await applyQueueRequest(pending.query, { mode });
+  }
+
+  function appendDialogueMessage(role, text, meta = {}) {
     const clean = String(text || "").trim();
     if (!clean) return;
     setDialogueMessages((current) => [
@@ -575,14 +823,33 @@ function App() {
       {
         id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         role,
-        text: clean
+        text: clean,
+        ...meta
       }
     ]);
+  }
+
+  function buildProgramReadyReply(queue, { mode = "replace" } = {}) {
+    const first = queue?.[0];
+    const rest = (queue || []).slice(1, 4).map((track) => `《${track.title}》`).join("、");
+    if (!first) return "我试着换了一轮，但这次没有找到稳定可播的歌。换个说法，我再接。";
+    if (mode === "append") {
+      return rest
+        ? `好，当前这首不打断。我把《${first.title}》接到下一首，后面再接 ${rest}。`
+        : `好，当前这首不打断。我把《${first.title}》接到下一首。`;
+    }
+    return rest
+      ? `好，这次真的换进播放列表了。先播《${first.title}》，后面接 ${rest}。`
+      : `好，这次真的换进播放列表了。先播《${first.title}》。`;
   }
 
   async function handleTransportPlay() {
     if (!activeTrack) {
       await startRadio();
+      return;
+    }
+    if (!activeTrack.resolvedTrack) {
+      setStatus("这首还在解析音源，READY 后再点播放。");
       return;
     }
     if (!isPlaying) {
@@ -604,6 +871,9 @@ function App() {
   }
 
   async function handleNext() {
+    if (activeTrack?.id && isPlaying) {
+      sendFeedback(activeTrack.id, "skip", false).catch(() => {});
+    }
     const nextIndex = currentIndex + 1;
     const queue = queueRef.current;
     if (queue[nextIndex]) {
@@ -618,12 +888,14 @@ function App() {
 
   const profileText = useMemo(() => {
     if (!profile) return "暂无画像";
+    const unmatched = (profile.unmatched || []).slice(0, 5).map((track) => `未匹配：${track.title} - ${track.artist}`);
     return [
       `导入 ${profile.importedCount || 0} 首 / 匹配 ${profile.matchedCount || 0} 首`,
-      profile.resolvedCount ? `已解析可播 ${profile.resolvedCount} 首` : "",
+      profile.resolvedCount ? `导入歌已确认可播 ${profile.resolvedCount} 首` : "导入歌会作为口味信号，队列会优先找稳定可播版本",
       profile.topScenes?.length ? `场景 ${profile.topScenes.map((x) => x.value).join("、")}` : "",
       profile.topMoods?.length ? `情绪 ${profile.topMoods.map((x) => x.value).join("、")}` : "",
-      profile.topGenres?.length ? `曲风 ${profile.topGenres.map((x) => x.value).join("、")}` : ""
+      profile.topGenres?.length ? `曲风 ${profile.topGenres.map((x) => x.value).join("、")}` : "",
+      ...unmatched
     ].filter(Boolean).join("\n");
   }, [profile]);
 
@@ -631,137 +903,212 @@ function App() {
     ? `已导入 ${profile.importedCount} 首，匹配 ${profile.matchedCount || 0} 首`
     : "导入歌单后，电台会优先按你的口味接歌";
 
+  function queueMetaFor(track) {
+    if (track.evidence?.some((item) => item.includes("来自你导入的歌单"))) return "你的歌单";
+    if (track.scriptSource === "llm") return "DJ";
+    if (track.script?.stages?.length) return `${track.script.stages.length} 段`;
+    return track.playable ? "READY" : "准备中";
+  }
+
   return (
     <main className="appShell">
       <section className="stage">
         <div className="deviceFrame">
           <header className="deviceTop">
             <div>
-              <p className="eyebrow">Claudio</p>
+              <p className="eyebrow onAirEyebrow"><span className="broadcastIcon">⌾</span> Live on air</p>
               <h1>今晚先听点像人的电台</h1>
               <p className="tasteSummary">{tasteSummary}</p>
             </div>
             <div className="topActions">
+              <button
+                type="button"
+                className={llmStatus?.configured ? "llmStatusButton connected" : "llmStatusButton"}
+                onClick={() => setIsLlmPanelOpen(true)}
+              >
+                {llmStatus?.configured ? `DeepSeek · ${llmStatus.model}` : "连接 DeepSeek"}
+              </button>
               <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
                 导入歌单
               </button>
+              <button type="button" className="tuneButton" aria-label="调音设置">☷</button>
             </div>
           </header>
 
-          <div className="clockPanel">
-            <div className="clockDigits">{formatClock(clock)}</div>
-            <div className="clockMeta">
-              <div>{formatWeekday(clock)}</div>
-              <div>{formatDate(clock)}</div>
-              <div className="onAir">
-                <span className="liveDot" />
-                ON AIR
-              </div>
-            </div>
-          </div>
-
-          <div className="nowRail">
-            <div className="cover">
-              {resolvedTrack?.coverUrl ? <img src={resolvedTrack.coverUrl} alt="" /> : <span>{activeTrack ? activeTrack.title.slice(0, 2) : "C"}</span>}
-            </div>
-            <div className="nowCopy">
-              <p className="label">Now Playing</p>
-              <h2>{activeTrack?.title || "等待推荐"}</h2>
-              <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
-              <div className="scoreLine">
-                <span>{resolvedTrack || activeTrack?.playable ? "可播放" : "准备中"}</span>
-                <span>{isNarrating ? "口播中" : isPlaying ? "播放中" : "待播放"}</span>
-              </div>
-            </div>
-            <div className="transport">
-              <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
-              <button type="button" className="transportMain" onClick={handleTransportPlay} aria-label={isPlaying ? "暂停" : "播放"}>
-                {isPlaying ? "Ⅱ" : "▶"}
-              </button>
-              <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
-            </div>
-            <div className="volumeRow">
-              <span>VOL</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={musicVolume}
-                onChange={(event) => setMusicVolume(Number(event.target.value))}
-              />
-            </div>
-          </div>
-
-          <div className="handwrittenBlock">
-            <span className="handwritten">what's next on your mind</span>
-            <span className="handwrittenCn">你接下来在想什么</span>
-          </div>
-
-          <div className="dialoguePanel">
-            <div className="djRow">
-              <div className="djAvatar">C</div>
-              <div className="dialogueStack">
-                {dialogueMessages.map((message) => (
-                  <div className={message.role === "user" ? "bubble userBubble" : "bubble"} key={message.id}>
-                    <p className="bubbleName">{message.role === "user" ? "You" : "Claudio"}</p>
-                    <p>{message.text}</p>
+          <div className="mainLayout">
+            <div className="playerColumn">
+              <div className="clockPanel">
+                <div className="clockReadout">
+                  <div className="clockDigits">{formatClock(clock)}<span>{String(new Date(clock).getSeconds()).padStart(2, "0")}</span></div>
+                  <div className="clockMeta">
+                    <div>{formatWeekday(clock)}</div>
+                    <div>{formatDate(clock)}</div>
+                    <div className="onAir">
+                      <span className="liveDot" />
+                      ON AIR
+                    </div>
                   </div>
-                ))}
+                </div>
+                <div className="frequencyScope" aria-hidden="true">
+                  <svg viewBox="0 0 430 120" role="img">
+                    <path className="frequencyWave" d="M8 76 C55 28 103 78 145 51 C190 20 220 41 258 62 C298 83 348 75 422 28" />
+                    <line className="frequencyCursorLine" x1="292" y1="10" x2="292" y2="102" />
+                    <circle className="frequencyCursorDot" cx="292" cy="10" r="3.5" />
+                  </svg>
+                  <div className="freqTicks"><span>88</span><span>92</span><span>96</span><span>100</span><span>104</span><span>108</span><span>FM</span></div>
+                </div>
+              </div>
+
+              <div className="nowRail">
+                <div className="cover">
+                  {resolvedTrack?.coverUrl ? <img src={resolvedTrack.coverUrl} alt="" /> : <span>{activeTrack ? activeTrack.title.slice(0, 2) : "C"}</span>}
+                </div>
+                <div className="nowStack">
+                  <div className="nowCopy">
+                    <p className="label">Now Playing</p>
+                    <h2>{activeTrack?.title || "等待推荐"}</h2>
+                    <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
+                  </div>
+                  <div className="transport">
+                    <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
+                    <button
+                      type="button"
+                      className="transportMain"
+                      onClick={handleTransportPlay}
+                      disabled={isLoadingQueue || Boolean(activeTrack && !activeTrack.resolvedTrack)}
+                      aria-label={isPlaying ? "暂停" : "播放"}
+                    >
+                      {isPlaying ? "Ⅱ" : "▶"}
+                    </button>
+                    <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
+                  </div>
+                </div>
+                <div className="volumeRow">
+                  <span>VOL</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={musicVolume}
+                    onChange={(event) => setMusicVolume(Number(event.target.value))}
+                  />
+                </div>
+
+                <audio
+                  ref={audioRef}
+                  className="nativeAudioPlayer"
+                  src={resolvedTrack?.streamUrl ? toAudioSource(resolvedTrack.streamUrl) : undefined}
+                  onPlay={handleNativeAudioPlay}
+                  onEnded={handleTrackEnded}
+                  preload="auto"
+                  playsInline
+                />
+
+                <div className="queuePanel nowQueuePanel">
+                  <div className="queueHead">
+                    <div>
+                      <p className="label">Queue</p>
+                      <h3>接下来要播什么</h3>
+                    </div>
+                    <div className="queueActions">
+                      <button type="button" onClick={rerollQueue} disabled={isLoadingQueue}>重排</button>
+                    </div>
+                  </div>
+                  <div className="queueList">
+                    {isLoadingQueue && !recommendations.length ? (
+                      <>
+                        <div className="queueSkeleton" />
+                        <div className="queueSkeleton" />
+                        <div className="queueSkeleton" />
+                      </>
+                    ) : null}
+                    {recommendations.map((track, index) => (
+                      <button
+                        className={activeTrack?.id === track.id ? "queueRow active" : "queueRow"}
+                        key={track.id}
+                        type="button"
+                        onClick={() => playTrackAtIndex(index, recommendations)}
+                      >
+                        <span className="queueIndex">{String(index + 1).padStart(2, "0")}</span>
+                        <span className="queueBody">
+                          <strong>{track.title}</strong>
+                          <small>{track.artist}</small>
+                        </span>
+                      </button>
+                    ))}
+                    {!isLoadingQueue && !recommendations.length ? (
+                      <div className="emptyQueue">
+                        <strong>还没有稳定可播的队列</strong>
+                        <span>换一句状态，或导入你的歌单，我会重新找能播且贴近的歌。</span>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="liveDjPanel">
+                <div className="spectrumBars" aria-hidden="true" />
+                <div className="liveDjCopy">
+                  <p className="label">{currentTalkSegment?.label || "Live DJ"}</p>
+                  <p className="liveDjText" aria-live="polite">{visibleDjLine}</p>
+                  {djLinePages.length > 1 ? (
+                    <p className="liveDjPager">{djPageIndex + 1}/{djLinePages.length}</p>
+                  ) : null}
+                </div>
+                <div className="talkControls">
+                  <button type="button" onClick={likeCurrentTrack} disabled={!activeTrack}>
+                    喜欢
+                  </button>
+                  <button type="button" onClick={dislikeCurrentTrack} disabled={!activeTrack}>
+                    少来
+                  </button>
+                  <button type="button" onClick={replayCurrentTalk} disabled={!djLine}>
+                    重说
+                  </button>
+                  <button type="button" onClick={skipCurrentTalk} disabled={!isNarrating && !currentTalkSegment}>
+                    跳过口播
+                  </button>
+                </div>
               </div>
             </div>
 
-            <form className="promptRow" onSubmit={handlePromptSubmit}>
-              <input value={promptText} onChange={(event) => setPromptText(event.target.value)} placeholder={query || "Say something to the DJ..."} />
-              <button type="submit" aria-label="生成队列">→</button>
-            </form>
+            <div className="chatColumn">
+              <div className="handwrittenBlock">
+                <span className="handwritten">what's next on your mind</span>
+                <span className="handwrittenCn">你接下来在想什么</span>
+              </div>
 
-            <div className="footerBar">
-              <span>CLAUDIO FM</span>
-              <span>{isNarrating ? "TALKING" : isLoadingQueue ? "TUNING" : "CONNECTED"}</span>
+              <div className="dialoguePanel">
+                <div className="dialogueStack" aria-live="polite">
+                  {dialogueMessages.map((message) => (
+                    <div className={message.role === "user" ? "messageRow userMessageRow" : "messageRow"} key={message.id}>
+                      {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
+                      <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
+                        <p>{message.text}</p>
+                        {message.actionPromptId && pendingQueueRequest?.id === message.actionPromptId ? (
+                          <div className="messageActions">
+                            <button type="button" onClick={() => resolvePendingQueueRequest("replace")}>立即切换</button>
+                            <button type="button" onClick={() => resolvePendingQueueRequest("append")}>播完再接</button>
+                          </div>
+                        ) : null}
+                      </div>
+                      {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
+                    </div>
+                  ))}
+                  <div ref={dialogueEndRef} />
+                </div>
+
+                <form className="promptRow" onSubmit={handlePromptSubmit}>
+                  <input value={promptText} onChange={(event) => setPromptText(event.target.value)} placeholder={query || "跟 Claudio 说一句..."} />
+                  <button type="submit" aria-label="生成队列">→</button>
+                </form>
+
+                <p className="statusLine">{status}</p>
+              </div>
             </div>
-            <p className="statusLine">{status}</p>
           </div>
 
-          <div className="queuePanel">
-            <div className="queueHead">
-              <div>
-                <p className="label">Queue</p>
-                <h3>接下来要播什么</h3>
-              </div>
-              <div className="queueActions">
-                <button type="button" onClick={() => loadRecommendations()}>重排</button>
-              </div>
-            </div>
-            <div className="queueList">
-              {isLoadingQueue && !recommendations.length ? (
-                <>
-                  <div className="queueSkeleton" />
-                  <div className="queueSkeleton" />
-                  <div className="queueSkeleton" />
-                </>
-              ) : null}
-              {recommendations.map((track, index) => (
-                <button
-                  className={activeTrack?.id === track.id ? "queueRow active" : "queueRow"}
-                  key={track.id}
-                  type="button"
-                  onClick={() => playTrackAtIndex(index, recommendations)}
-                >
-                  <span className="queueIndex">{String(index + 1).padStart(2, "0")}</span>
-                  <span className="queueBody">
-                    <strong>{track.title}</strong>
-                    <small>{track.artist}</small>
-                  </span>
-                  <span className="queueMeta">
-                    {track.playable ? "READY" : "准备中"}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <audio ref={audioRef} onEnded={handleTrackEnded} hidden />
         </div>
       </section>
 
@@ -779,6 +1126,7 @@ function App() {
             </div>
             <div className="importSwitch" role="tablist" aria-label="歌单导入方式">
               <button type="button" className={importMode === "link" ? "active" : ""} onClick={() => setImportMode("link")}>链接</button>
+              <button type="button" className={importMode === "text" ? "active" : ""} onClick={() => setImportMode("text")}>文字</button>
               <button type="button" className={importMode === "screenshot" ? "active" : ""} onClick={() => setImportMode("screenshot")}>截图</button>
             </div>
             {importMode === "link" ? (
@@ -788,6 +1136,16 @@ function App() {
                   value={playlistUrl}
                   onChange={(event) => setPlaylistUrl(event.target.value)}
                   placeholder="粘贴网易云歌单链接，例如 https://music.163.com/#/playlist?id=..."
+                />
+              </label>
+            ) : importMode === "text" ? (
+              <label className="importField">
+                <span>歌单文字</span>
+                <textarea
+                  value={playlistText}
+                  onChange={(event) => setPlaylistText(event.target.value)}
+                  placeholder={"每行一首，例如：\n遇见 - 孙燕姿\n十年 - 陈奕迅"}
+                  rows={8}
                 />
               </label>
             ) : (
@@ -804,6 +1162,51 @@ function App() {
               </button>
             </div>
             <pre>{profileText}</pre>
+          </div>
+        </div>
+      ) : null}
+
+      {isLlmPanelOpen ? (
+        <div className="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="llm-config-title">
+          <div className="playlistModal llmModal">
+            <div className="modalHead">
+              <div>
+                <p className="label">Dialogue Engine</p>
+                <h2 id="llm-config-title">连接 DeepSeek</h2>
+              </div>
+              <button type="button" className="iconButton" onClick={() => setIsLlmPanelOpen(false)} aria-label="关闭 DeepSeek 配置">
+                ×
+              </button>
+            </div>
+            <div className="llmCurrentState">
+              <span>{llmStatus?.configured ? "已连接" : "未连接"}</span>
+              <strong>{llmStatus?.configured ? `${llmStatus.provider} / ${llmStatus.model}` : "当前正在用本地规则兜底"}</strong>
+            </div>
+            <label className="importField">
+              <span>DeepSeek API Key</span>
+              <input
+                value={llmApiKey}
+                onChange={(event) => setLlmApiKey(event.target.value)}
+                placeholder="sk-..."
+                type="password"
+                autoComplete="off"
+              />
+            </label>
+            <label className="importField">
+              <span>模型</span>
+              <input value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="deepseek-chat" />
+            </label>
+            <label className="importField">
+              <span>API Base</span>
+              <input value={llmApiBase} onChange={(event) => setLlmApiBase(event.target.value)} placeholder="https://api.deepseek.com" />
+            </label>
+            <div className="modalActions">
+              <button type="button" onClick={() => setIsLlmPanelOpen(false)}>取消</button>
+              <button type="button" className="primaryAction" onClick={saveLlmConfig} disabled={isSavingLlm}>
+                {isSavingLlm ? "保存中" : "保存并启用"}
+              </button>
+            </div>
+            <p className="configHint">Key 会写入本机 `.env.local`，不会进入 git。</p>
           </div>
         </div>
       ) : null}
@@ -829,6 +1232,47 @@ function formatDate(value) {
     month: "short",
     year: "numeric"
   }).format(new Date(value));
+}
+
+function buildImportSummary(result, extractedCount) {
+  const unmatchedCount = Math.max(0, (result.importedCount || extractedCount || 0) - (result.matchedCount || 0));
+  const playableText = result.resolvedCount ? `，其中 ${result.resolvedCount} 首已经确认可播` : "";
+  const unmatchedText = unmatchedCount ? `；还有 ${unmatchedCount} 首没匹配上，我会先用相近口味补队列` : "";
+  return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。现在按你的歌单重排。`;
+}
+
+function splitTalkPages(text, maxChars) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [""];
+  if (clean.length <= maxChars) return [clean];
+  const units = clean
+    .split(/(?<=[。！？!?；;，,：:])\s*/)
+    .flatMap((unit) => splitLongTalkUnit(unit, maxChars))
+    .filter(Boolean);
+  const pages = [];
+  let current = "";
+  for (const unit of units) {
+    const next = current ? `${current}${unit}` : unit;
+    if (current && next.length > maxChars) {
+      pages.push(current);
+      current = unit;
+    } else {
+      current = next;
+    }
+  }
+  if (current) pages.push(current);
+  return pages.length ? pages : [clean];
+}
+
+function splitLongTalkUnit(unit, maxChars) {
+  const clean = String(unit || "").trim();
+  if (!clean) return [];
+  if (clean.length <= maxChars) return [clean];
+  const chunks = [];
+  for (let index = 0; index < clean.length; index += maxChars) {
+    chunks.push(clean.slice(index, index + maxChars));
+  }
+  return chunks;
 }
 
 async function fetchJson(path, init = {}) {

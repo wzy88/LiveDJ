@@ -6,7 +6,7 @@ const musicApiBase = process.env.MUSIC_API_BASE || "";
 let embeddedMusicApi = null;
 
 export async function resolvePlayableTrack({ songId = "", title, artist, providerIds = [], durationSec = null }) {
-  const cached = songId ? getCleanPlayableRecord(songId) : null;
+  const cached = songId ? getCleanPlayableRecord(songId, { title, artist }) : null;
   const rawCached = songId ? getPlayableRecord(songId) : null;
   if (cached?.streamUrl && !isDirtyResolvedRecord(cached) && isExpectedSongMatch(cached.title, title, cached.artist, artist)) {
     return {
@@ -43,7 +43,7 @@ export async function resolvePlayableTrack({ songId = "", title, artist, provide
     .slice(0, 5);
 
   for (const entry of ranked) {
-    const resolved = await resolveById(entry.song.id, entry.song.name, (entry.song.ar || entry.song.artists || []).map((item) => item.name).filter(Boolean).join(" / "), getDurationMs(entry.song) ? Math.round(getDurationMs(entry.song) / 1000) : null);
+    const resolved = await resolveById(entry.song.id, title, artist, durationSec);
     if (!resolved) continue;
     if (songId) {
       storePlayableRecord(songId, resolved);
@@ -135,7 +135,8 @@ function scoreSong(song, expectedTitle, expectedArtist, index) {
   if (normalize(song.name).includes(normalize(expectedTitle))) score += 35;
   if (normalize(expectedTitle).includes(normalize(song.name))) score += 18;
   if (actualParts.includes(expectedPart)) score += 40;
-  if (/live|现场|remix|cover|翻唱|翻自|伴奏|纯音乐|钢琴|吉他|demo|片段|试听|karaoke|instrumental|montagem|音乐社|音乐号|网友|粉丝/.test(haystack)) score -= 120;
+  if (looksLikeMedleyTitle(song.name, expectedTitle)) return -100;
+  if (isDirtyResolvedText(haystack) || /音乐社|音乐号|网友|粉丝/.test(haystack)) score -= 180;
   const duration = getDurationMs(song);
   if (duration && duration < 120000) score -= 80;
   if (duration && duration > 180000) score += 10;
@@ -183,18 +184,32 @@ function getEmbeddedMusicApi() {
 
 function isDirtyResolvedRecord(record) {
   const haystack = `${record.title || ""} ${record.artist || ""} ${record.album || ""}`.toLowerCase();
-  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|吉他|demo|片段|试听|karaoke|instrumental|remix|dj版|montagem|电台版|剪辑/.test(haystack);
+  return isDirtyResolvedText(haystack);
+}
+
+function isDirtyResolvedText(haystack = "") {
+  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|piano|吉他|guitar|acoustic|demo|片段|试听|karaoke|instrumental|remix|dj|montagem|电台版|剪辑|改版|伤感版|烟嗓版|降调版|升调版|加速版|慢速版|女声版|男声版|0\.8x|1\.2x/.test(haystack);
 }
 
 function isExpectedSongMatch(actualTitle, expectedTitle, actualArtist, expectedArtist) {
   const actualTitleKey = normalizeSongTitle(actualTitle);
   const expectedTitleKey = normalizeSongTitle(expectedTitle);
   const actualArtistKey = normalize(actualArtist);
-  const expectedArtistKey = normalize(expectedArtist).split(/[\/,&，、]/)[0];
+  const actualPrimaryArtistKey = primaryArtistKey(actualArtist);
+  const expectedArtistKey = primaryArtistKey(expectedArtist);
   if (!actualTitleKey || !expectedTitleKey) return false;
   const titleMatch = actualTitleKey === expectedTitleKey || actualTitleKey.includes(expectedTitleKey) || expectedTitleKey.includes(actualTitleKey);
-  const artistMatch = !expectedArtistKey || actualArtistKey.includes(expectedArtistKey) || expectedArtistKey.includes(actualArtistKey);
-  return titleMatch && artistMatch;
+  if (!titleMatch || looksLikeMedleyTitle(actualTitle, expectedTitle)) return false;
+  const artistMatch = !expectedArtistKey || actualPrimaryArtistKey === expectedArtistKey || actualArtistKey === expectedArtistKey;
+  return artistMatch;
+}
+
+function looksLikeMedleyTitle(actualTitle, expectedTitle) {
+  const actualTitleKey = normalizeSongTitle(actualTitle);
+  const expectedTitleKey = normalizeSongTitle(expectedTitle);
+  if (!actualTitleKey || !expectedTitleKey) return false;
+  if (actualTitleKey === expectedTitleKey) return false;
+  return actualTitleKey.length > Math.max(expectedTitleKey.length + 6, expectedTitleKey.length * 1.8);
 }
 
 function normalizeSongTitle(value = "") {
@@ -203,4 +218,8 @@ function normalizeSongTitle(value = "") {
     .replace(/live版?|remix版?|cover版?|正式版|原版|录音室版|完整版|新版|旧版/g, "")
     .replace(/[-_·•"'“”‘’.,!?，。！？:：;；\s]/g, "")
     .trim();
+}
+
+function primaryArtistKey(value = "") {
+  return normalize(value).split(/[\/,&，、]| feat\.? | ft\.? /i)[0].trim();
 }
