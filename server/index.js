@@ -33,6 +33,7 @@ const allowedOrigins = new Set(
   [
     "http://127.0.0.1:5173",
     "http://localhost:5173",
+    "https://wzy88.github.io",
     process.env.PUBLIC_ORIGIN
   ].filter(Boolean)
 );
