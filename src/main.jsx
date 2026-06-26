@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { mergeQueueAfterCurrent, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
+const liveDjPageChars = 96;
 
 function App() {
   const [graphStats, setGraphStats] = useState(null);
@@ -13,7 +15,7 @@ function App() {
   const [playlistImageDataUrl, setPlaylistImageDataUrl] = useState("");
   const [playlistImageName, setPlaylistImageName] = useState("");
   const [query, setQuery] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
-  const [promptText, setPromptText] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
+  const [promptText, setPromptText] = useState("");
   const [recommendations, setRecommendations] = useState([]);
   const [activeTrack, setActiveTrack] = useState(null);
   const [resolvedTrack, setResolvedTrack] = useState(null);
@@ -33,10 +35,12 @@ function App() {
   const [llmApiBase, setLlmApiBase] = useState("https://api.deepseek.com");
   const [musicVolume, setMusicVolume] = useState(0.88);
   const [djLine, setDjLine] = useState("把你的想法丢给我，我来接歌。");
+  const [djPageIndex, setDjPageIndex] = useState(0);
   const [currentTalkSegment, setCurrentTalkSegment] = useState(null);
   const [dialogueMessages, setDialogueMessages] = useState([
     { id: "dj-initial", role: "dj", text: "把你的想法丢给我，我来接歌。" }
   ]);
+  const [pendingQueueRequest, setPendingQueueRequest] = useState(null);
 
   const audioRef = useRef(null);
   const voiceRef = useRef(null);
@@ -76,6 +80,25 @@ function App() {
     const timer = window.setInterval(() => setClock(Date.now()), 15000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const djLinePages = useMemo(() => splitTalkPages(djLine, liveDjPageChars), [djLine]);
+  const visibleDjLine = djLinePages[djPageIndex] || djLinePages[0] || "";
+
+  useEffect(() => {
+    setDjPageIndex(0);
+  }, [djLine]);
+
+  useEffect(() => {
+    if (djLinePages.length <= 1) return undefined;
+    const page = djLinePages[djPageIndex] || "";
+    const delay = isNarrating
+      ? Math.max(2800, Math.min(7600, page.length * 190))
+      : Math.max(4200, Math.min(9200, page.length * 240));
+    const timer = window.setTimeout(() => {
+      setDjPageIndex((index) => (index + 1) % djLinePages.length);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [djLinePages, djPageIndex, isNarrating]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -225,7 +248,7 @@ function App() {
         q: effectiveQuery,
         limit: "10",
         wait: options.refresh ? "3600" : "6500",
-        scriptWait: options.refresh ? "900" : "4200"
+        scriptWait: options.refresh ? "7000" : "18000"
       });
       if (refreshSeed) params.set("refresh", refreshSeed);
       if (avoidIds.length) params.set("avoid", avoidIds.join(","));
@@ -239,10 +262,19 @@ function App() {
     try {
       const result = await programPromiseRef.current.promise;
       const nextQueue = result.queue || [];
-      setRecommendations(nextQueue);
-      queueRef.current = nextQueue;
+      const mergedQueue = options.appendAfterCurrent
+        ? mergeQueueAfterCurrent(queueRef.current, nextQueue, currentIndex)
+        : nextQueue;
+      setRecommendations(mergedQueue);
+      queueRef.current = mergedQueue;
       setProfile(result.profile || profile);
-      if (nextQueue[0]) {
+      if (options.appendAfterCurrent && activeTrackRef.current) {
+        setStatus(nextQueue.length ? `已把 ${nextQueue.length} 首接到当前歌曲后面。` : "这次没有找到稳定可播的后续歌曲。");
+        if (options.appendDjResponse) {
+          appendDialogueMessage("dj", buildProgramReadyReply(nextQueue, { mode: "append" }));
+        }
+        prewarmScriptAudio(mergedQueue);
+      } else if (nextQueue[0]) {
         setCurrentIndex(0);
         setActiveTrack(nextQueue[0]);
         setResolvedTrack(nextQueue[0].resolvedTrack || null);
@@ -256,7 +288,9 @@ function App() {
         setResolvedTrack(null);
         setDjLine("这次没有找到稳定可播的歌。我会更保守一点，你也可以换个状态词或者导入更多歌。");
       }
-      setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
+      if (!options.appendAfterCurrent) {
+        setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
+      }
       return result;
     } finally {
       setIsLoadingQueue(false);
@@ -326,7 +360,7 @@ function App() {
     setStatus("正在准备可播队列，READY 后再点播放。");
   }
 
-  async function playTrackAtIndex(index, queue = queueRef.current) {
+  async function playTrackAtIndex(index, queue = queueRef.current, options = {}) {
     const safeIndex = index < 0 ? 0 : index;
     const track = queue[safeIndex];
     if (!track?.resolvedTrack) {
@@ -339,14 +373,18 @@ function App() {
     setResolvedTrack(track.resolvedTrack);
     setDjLine(track.script?.opening || `正在播放《${track.title}》。`);
     setStatus(`正在播放：${track.title} - ${track.artist}`);
-    if (audioRef.current) {
-      audioRef.current.src = toAudioSource(track.resolvedTrack.streamUrl);
-      audioRef.current.loop = false;
-      audioRef.current.muted = false;
-      audioRef.current.preload = "auto";
-      audioRef.current.volume = musicVolume;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.src = toAudioSource(track.resolvedTrack.streamUrl);
+      audio.load();
+      audio.loop = false;
+      audio.muted = false;
+      audio.preload = "auto";
+      audio.volume = musicVolume;
       try {
-        await playMusicAudio(audioRef.current);
+        await playMusicAudio(audio, {
+          allowMutedAutoplayRetry: Boolean(options.allowMutedAutoplayRetry)
+        });
         setIsPlaying(true);
       } catch (error) {
         setStatus(playbackErrorStatus(error));
@@ -358,6 +396,18 @@ function App() {
     await markPlayed(track.id);
   }
 
+  async function continuePlaybackFromIndex(startIndex, queue = queueRef.current) {
+    const safeStart = Math.max(0, Number(startIndex) || 0);
+    for (let index = safeStart; index < queue.length; index += 1) {
+      const track = queue[index];
+      if (!track?.resolvedTrack?.streamUrl) continue;
+      await playTrackAtIndex(index, queue, { allowMutedAutoplayRetry: true });
+      return true;
+    }
+    setStatus("后面暂时没有可播音源，我正在重新排一段。");
+    return false;
+  }
+
   async function handleTrackEnded() {
     stopSpeechAndTimers();
     if (activeTrack?.id) {
@@ -366,12 +416,12 @@ function App() {
     const nextIndex = currentIndex + 1;
     const queue = queueRef.current;
     if (queue[nextIndex]) {
-      await playTrackAtIndex(nextIndex, queue);
+      await continuePlaybackFromIndex(nextIndex, queue);
       return;
     }
     const program = await loadRecommendations();
-    if (program?.queue?.[0]) {
-      await playTrackAtIndex(0, program.queue);
+    if (program?.queue?.length) {
+      await continuePlaybackFromIndex(0, program.queue);
     }
   }
 
@@ -441,13 +491,13 @@ function App() {
     return `${apiBase}/api/audio?url=${encodeURIComponent(url)}`;
   }
 
-  async function playMusicAudio(audio) {
+  async function playMusicAudio(audio, { allowMutedAutoplayRetry = false } = {}) {
     try {
       audio.muted = false;
       await audio.play();
       return;
     } catch (error) {
-      if (!/interact|gesture|allowed|permission/i.test(error.message || "")) {
+      if (!allowMutedAutoplayRetry || !/interact|gesture|allowed|permission/i.test(error.message || "")) {
         throw error;
       }
       audio.muted = true;
@@ -703,6 +753,7 @@ function App() {
       intent: fallbackIntent,
       reply: "我在。你这句我收到了。"
     }));
+    const isMusicIntent = intentProbe.intent === "music" || intentProbe.intent === "mixed" || fallbackIntent === "music";
     if (intentProbe.intent === "chat") {
       if (intentProbe?.reply) {
         appendDialogueMessage("dj", intentProbe.reply);
@@ -711,30 +762,60 @@ function App() {
       setStatus(intentProbe.source === "llm" ? "Claudio 已回复。" : "Claudio 已用本地兜底回复。");
       return;
     }
-    stopSpeechAndTimers();
+    if (!isMusicIntent) return;
+    const queueAction = resolveQueueRequestAction(nextQuery, {
+      hasActiveTrack: Boolean(activeTrack)
+    });
+    if (queueAction === "ask") {
+      const pending = {
+        id: `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        query: nextQuery
+      };
+      setPendingQueueRequest(pending);
+      appendDialogueMessage("dj", `我听懂了，你想接一段新的方向。要现在切过去，还是等《${activeTrack?.title || "当前这首"}》播完再接上？`, {
+        actionPromptId: pending.id
+      });
+      setStatus("等待你选择：立即切换，或播完当前这首再接上。");
+      return;
+    }
+    await applyQueueRequest(nextQuery, {
+      mode: queueAction === "append" ? "append" : "replace"
+    });
+  }
+
+  async function applyQueueRequest(nextQuery, { mode = "replace" } = {}) {
+    const appendAfterCurrent = mode === "append";
+    if (!appendAfterCurrent) {
+      primeAudioElement();
+      stopSpeechAndTimers();
+    }
     programPromiseRef.current = null;
     setQuery(nextQuery);
     latestQueryRef.current = nextQuery;
-    const program = await loadRecommendations(nextQuery, { appendDjResponse: false, refresh: true, avoidCurrent: true });
+    const program = await loadRecommendations(nextQuery, {
+      appendDjResponse: false,
+      refresh: true,
+      avoidCurrent: true,
+      appendAfterCurrent
+    });
     const nextQueue = program?.queue || [];
-    const dialogue = await fetchJson("/api/dialogue", {
-      method: "POST",
-      body: JSON.stringify({
-        message: `${nextQuery}\n请只根据这次已经排好的播放列表回复，第一首必须是《${nextQueue[0]?.title || ""}》，后面可以提到：${nextQueue.slice(1, 4).map((track) => `《${track.title}》`).join("、")}。不要承诺播放列表里没有的歌。`,
-        query: nextQuery,
-        activeTrack: nextQueue[0] || null,
-        queue: nextQueue.slice(0, 8)
-      })
-    }).catch(() => null);
-    const reply = dialogue?.reply || buildProgramReadyReply(nextQueue);
+    const reply = buildProgramReadyReply(nextQueue, { mode });
     appendDialogueMessage("dj", reply);
     setDjLine(reply);
-    if (nextQueue[0]) {
-      await playTrackAtIndex(0, nextQueue);
+    if (!appendAfterCurrent && nextQueue.length) {
+      await continuePlaybackFromIndex(0, nextQueue);
     }
   }
 
-  function appendDialogueMessage(role, text) {
+  async function resolvePendingQueueRequest(mode) {
+    if (!pendingQueueRequest?.query) return;
+    const pending = pendingQueueRequest;
+    setPendingQueueRequest(null);
+    appendDialogueMessage("user", mode === "append" ? "播完这首再接上" : "现在切过去");
+    await applyQueueRequest(pending.query, { mode });
+  }
+
+  function appendDialogueMessage(role, text, meta = {}) {
     const clean = String(text || "").trim();
     if (!clean) return;
     setDialogueMessages((current) => [
@@ -742,15 +823,21 @@ function App() {
       {
         id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         role,
-        text: clean
+        text: clean,
+        ...meta
       }
     ]);
   }
 
-  function buildProgramReadyReply(queue) {
+  function buildProgramReadyReply(queue, { mode = "replace" } = {}) {
     const first = queue?.[0];
     const rest = (queue || []).slice(1, 4).map((track) => `《${track.title}》`).join("、");
     if (!first) return "我试着换了一轮，但这次没有找到稳定可播的歌。换个说法，我再接。";
+    if (mode === "append") {
+      return rest
+        ? `好，当前这首不打断。我把《${first.title}》接到下一首，后面再接 ${rest}。`
+        : `好，当前这首不打断。我把《${first.title}》接到下一首。`;
+    }
     return rest
       ? `好，这次真的换进播放列表了。先播《${first.title}》，后面接 ${rest}。`
       : `好，这次真的换进播放列表了。先播《${first.title}》。`;
@@ -829,7 +916,7 @@ function App() {
         <div className="deviceFrame">
           <header className="deviceTop">
             <div>
-              <p className="eyebrow">Claudio</p>
+              <p className="eyebrow onAirEyebrow"><span className="broadcastIcon">⌾</span> Live on air</p>
               <h1>今晚先听点像人的电台</h1>
               <p className="tasteSummary">{tasteSummary}</p>
             </div>
@@ -844,20 +931,31 @@ function App() {
               <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
                 导入歌单
               </button>
+              <button type="button" className="tuneButton" aria-label="调音设置">☷</button>
             </div>
           </header>
 
           <div className="mainLayout">
             <div className="playerColumn">
               <div className="clockPanel">
-                <div className="clockDigits">{formatClock(clock)}</div>
-                <div className="clockMeta">
-                  <div>{formatWeekday(clock)}</div>
-                  <div>{formatDate(clock)}</div>
-                  <div className="onAir">
-                    <span className="liveDot" />
-                    ON AIR
+                <div className="clockReadout">
+                  <div className="clockDigits">{formatClock(clock)}<span>{String(new Date(clock).getSeconds()).padStart(2, "0")}</span></div>
+                  <div className="clockMeta">
+                    <div>{formatWeekday(clock)}</div>
+                    <div>{formatDate(clock)}</div>
+                    <div className="onAir">
+                      <span className="liveDot" />
+                      ON AIR
+                    </div>
                   </div>
+                </div>
+                <div className="frequencyScope" aria-hidden="true">
+                  <svg viewBox="0 0 430 120" role="img">
+                    <path className="frequencyWave" d="M8 76 C55 28 103 78 145 51 C190 20 220 41 258 62 C298 83 348 75 422 28" />
+                    <line className="frequencyCursorLine" x1="292" y1="10" x2="292" y2="102" />
+                    <circle className="frequencyCursorDot" cx="292" cy="10" r="3.5" />
+                  </svg>
+                  <div className="freqTicks"><span>88</span><span>92</span><span>96</span><span>100</span><span>104</span><span>108</span><span>FM</span></div>
                 </div>
               </div>
 
@@ -865,27 +963,25 @@ function App() {
                 <div className="cover">
                   {resolvedTrack?.coverUrl ? <img src={resolvedTrack.coverUrl} alt="" /> : <span>{activeTrack ? activeTrack.title.slice(0, 2) : "C"}</span>}
                 </div>
-                <div className="nowCopy">
-                  <p className="label">Now Playing</p>
-                  <h2>{activeTrack?.title || "等待推荐"}</h2>
-                  <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
-                  <div className="scoreLine">
-                    <span>{resolvedTrack || activeTrack?.playable ? "可播放" : "准备中"}</span>
-                    <span>{isNarrating ? "口播中" : isPlaying ? "播放中" : "待播放"}</span>
+                <div className="nowStack">
+                  <div className="nowCopy">
+                    <p className="label">Now Playing</p>
+                    <h2>{activeTrack?.title || "等待推荐"}</h2>
+                    <p className="artistLine">{activeTrack?.artist || "导入歌单后开始"}</p>
                   </div>
-                </div>
-                <div className="transport">
-                  <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
-                  <button
-                    type="button"
-                    className="transportMain"
-                    onClick={handleTransportPlay}
-                    disabled={isLoadingQueue || Boolean(activeTrack && !activeTrack.resolvedTrack)}
-                    aria-label={isPlaying ? "暂停" : "播放"}
-                  >
-                    {isPlaying ? "Ⅱ" : "▶"}
-                  </button>
-                  <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
+                  <div className="transport">
+                    <button type="button" onClick={handlePrevious} aria-label="上一首">◀</button>
+                    <button
+                      type="button"
+                      className="transportMain"
+                      onClick={handleTransportPlay}
+                      disabled={isLoadingQueue || Boolean(activeTrack && !activeTrack.resolvedTrack)}
+                      aria-label={isPlaying ? "暂停" : "播放"}
+                    >
+                      {isPlaying ? "Ⅱ" : "▶"}
+                    </button>
+                    <button type="button" onClick={handleNext} aria-label="下一首">▶</button>
+                  </div>
                 </div>
                 <div className="volumeRow">
                   <span>VOL</span>
@@ -898,6 +994,16 @@ function App() {
                     onChange={(event) => setMusicVolume(Number(event.target.value))}
                   />
                 </div>
+
+                <audio
+                  ref={audioRef}
+                  className="nativeAudioPlayer"
+                  src={resolvedTrack?.streamUrl ? toAudioSource(resolvedTrack.streamUrl) : undefined}
+                  onPlay={handleNativeAudioPlay}
+                  onEnded={handleTrackEnded}
+                  preload="auto"
+                  playsInline
+                />
 
                 <div className="queuePanel nowQueuePanel">
                   <div className="queueHead">
@@ -929,9 +1035,6 @@ function App() {
                           <strong>{track.title}</strong>
                           <small>{track.artist}</small>
                         </span>
-                        <span className="queueMeta">
-                          {queueMetaFor(track)}
-                        </span>
                       </button>
                     ))}
                     {!isLoadingQueue && !recommendations.length ? (
@@ -944,21 +1047,14 @@ function App() {
                 </div>
               </div>
 
-              <audio
-                ref={audioRef}
-                className="nativeAudioPlayer"
-                controls={Boolean(resolvedTrack?.streamUrl)}
-                src={resolvedTrack?.streamUrl ? toAudioSource(resolvedTrack.streamUrl) : undefined}
-                onPlay={handleNativeAudioPlay}
-                onEnded={handleTrackEnded}
-                preload="auto"
-                playsInline
-              />
-
               <div className="liveDjPanel">
+                <div className="spectrumBars" aria-hidden="true" />
                 <div className="liveDjCopy">
                   <p className="label">{currentTalkSegment?.label || "Live DJ"}</p>
-                  <p>{djLine}</p>
+                  <p className="liveDjText" aria-live="polite">{visibleDjLine}</p>
+                  {djLinePages.length > 1 ? (
+                    <p className="liveDjPager">{djPageIndex + 1}/{djLinePages.length}</p>
+                  ) : null}
                 </div>
                 <div className="talkControls">
                   <button type="button" onClick={likeCurrentTrack} disabled={!activeTrack}>
@@ -990,6 +1086,12 @@ function App() {
                       {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
                       <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
                         <p>{message.text}</p>
+                        {message.actionPromptId && pendingQueueRequest?.id === message.actionPromptId ? (
+                          <div className="messageActions">
+                            <button type="button" onClick={() => resolvePendingQueueRequest("replace")}>立即切换</button>
+                            <button type="button" onClick={() => resolvePendingQueueRequest("append")}>播完再接</button>
+                          </div>
+                        ) : null}
                       </div>
                       {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
                     </div>
@@ -1002,10 +1104,6 @@ function App() {
                   <button type="submit" aria-label="生成队列">→</button>
                 </form>
 
-                <div className="footerBar">
-                  <span>CLAUDIO FM</span>
-                  <span>{isNarrating ? "TALKING" : isLoadingQueue ? "TUNING" : llmStatus?.configured ? "DEEPSEEK" : "RULES"}</span>
-                </div>
                 <p className="statusLine">{status}</p>
               </div>
             </div>
@@ -1141,6 +1239,40 @@ function buildImportSummary(result, extractedCount) {
   const playableText = result.resolvedCount ? `，其中 ${result.resolvedCount} 首已经确认可播` : "";
   const unmatchedText = unmatchedCount ? `；还有 ${unmatchedCount} 首没匹配上，我会先用相近口味补队列` : "";
   return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。现在按你的歌单重排。`;
+}
+
+function splitTalkPages(text, maxChars) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return [""];
+  if (clean.length <= maxChars) return [clean];
+  const units = clean
+    .split(/(?<=[。！？!?；;，,：:])\s*/)
+    .flatMap((unit) => splitLongTalkUnit(unit, maxChars))
+    .filter(Boolean);
+  const pages = [];
+  let current = "";
+  for (const unit of units) {
+    const next = current ? `${current}${unit}` : unit;
+    if (current && next.length > maxChars) {
+      pages.push(current);
+      current = unit;
+    } else {
+      current = next;
+    }
+  }
+  if (current) pages.push(current);
+  return pages.length ? pages : [clean];
+}
+
+function splitLongTalkUnit(unit, maxChars) {
+  const clean = String(unit || "").trim();
+  if (!clean) return [];
+  if (clean.length <= maxChars) return [clean];
+  const chunks = [];
+  for (let index = 0; index < clean.length; index += maxChars) {
+    chunks.push(clean.slice(index, index + maxChars));
+  }
+  return chunks;
 }
 
 async function fetchJson(path, init = {}) {

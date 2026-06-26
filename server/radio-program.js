@@ -2,42 +2,67 @@ import { loadProfile, recommend } from "./recommender.js";
 import { resolvePlayableTrack } from "./music.js";
 import { getCleanPlayableRecord } from "./playable-index.js";
 import { generateTalkScriptWithLlm } from "./llm.js";
+import { fetchSongContext } from "./song-context.js";
+import { fetchArtistContext } from "./artist-context.js";
+import { fetchBeijingBroadcastContext } from "./broadcast-context.js";
+import { buildProgramBrief } from "./program-brief.js";
+import { planRadioQueue } from "./queue-planner.js";
+import { buildShowTalkPlan, buildTrackContentPack } from "./content-pack.js";
+import { getTalkVoiceProfile, scoreTalkLineQuality } from "./talk-voice.js";
 
-export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, refreshSeed = "", avoidIds = [], scriptBudgetMs = 4200 } = {}) {
+export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, refreshSeed = "", avoidIds = [], scriptBudgetMs = 28000, songContextBudgetMs = 1800, artistContextBudgetMs = 1500, broadcastContext = null, songContextProvider = fetchSongContext, artistContextProvider = fetchArtistContext } = {}) {
   const profile = loadProfile();
+  const brief = buildProgramBrief(query);
+  const resolveLimit = brief.format === "city-editorial" ? Math.min(Math.max(limit * 3, limit + 8), 18) : limit;
+  const cachedScanLimit = brief.format === "city-editorial" ? Math.min(Math.max(resolveLimit * 3, resolveLimit), 36) : resolveLimit;
+  const broadcast = broadcastContext || await fetchBeijingBroadcastContext({
+    city: brief.city || "北京",
+    editorialMode: "test",
+    now: inferBroadcastNowFromQuery(query)
+  });
   const candidateLimit = refreshSeed || avoidIds.length ? Math.max(90, limit * 10) : Math.max(24, limit * 6);
   const raw = recommend({ query, limit: candidateLimit, refreshSeed, avoidIds });
   const queue = [];
   const rejected = [];
-  const candidates = (raw.recommendations || []).slice(0, Math.max(24, candidateLimit));
+  const candidates = planRadioQueue({
+    candidates: (raw.recommendations || []).slice(0, Math.max(24, candidateLimit)),
+    brief,
+    limit: Math.max(24, candidateLimit)
+  });
   const usedIds = new Set();
+  const explicitCandidates = candidates.filter(hasExplicitRequestEvidence);
+  if (explicitCandidates.length) {
+    await resolveCandidatesIntoQueue(queue, explicitCandidates, {
+      limit: Math.min(resolveLimit, Math.max(3, explicitCandidates.length)),
+      maxWaitMs: Math.max(maxWaitMs || 0, 6500),
+      query,
+      profile,
+      anchors: raw.anchors || [],
+      rejected,
+      usedIds
+    });
+  }
   for (const track of candidates) {
+    if (usedIds.has(track.id)) continue;
     const cached = getCleanPlayableRecord(track.id, track);
     if (!cached?.streamUrl) continue;
     pushPlayable(queue, track, cached, { query, profile, anchors: raw.anchors || [] });
     usedIds.add(track.id);
-    if (queue.length >= limit) break;
+    if (queue.length >= cachedScanLimit) break;
   }
 
-  if (queue.length < limit) {
+  if (queue.length < resolveLimit) {
     const remaining = candidates.filter((track) => !usedIds.has(track.id));
-    const startedAt = Date.now();
     const budgetMs = maxWaitMs || (queue.length ? 1900 : 3200);
-    for (let index = 0; index < remaining.length && queue.length < limit; index += 4) {
-      const timeLeft = budgetMs - (Date.now() - startedAt);
-      if (timeLeft < 500) break;
-      const batch = remaining.slice(index, index + 4);
-      const results = await Promise.allSettled(batch.map((track) => resolveWithTimeout(track, Math.min(1800, timeLeft))));
-      results.forEach((result, batchIndex) => {
-        const track = batch[batchIndex];
-        if (queue.length >= limit) return;
-        if (result.status !== "fulfilled" || !result.value) {
-          rejected.push({ id: track.id, title: track.title, artist: track.artist, reason: "音源不可播或匹配不可靠" });
-          return;
-        }
-        pushPlayable(queue, track, result.value, { query, profile, anchors: raw.anchors || [] });
-      });
-    }
+    await resolveCandidatesIntoQueue(queue, remaining, {
+      limit: resolveLimit,
+      maxWaitMs: budgetMs,
+      query,
+      profile,
+      anchors: raw.anchors || [],
+      rejected,
+      usedIds
+    });
   }
 
   for (const track of candidates) {
@@ -45,17 +70,68 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, 
     rejected.push({ id: track.id, title: track.title, artist: track.artist, reason: "本轮时间内未完成解析" });
   }
 
-  await enrichQueueScripts(queue, { query, profile, anchors: raw.anchors || [], budgetMs: scriptBudgetMs });
-  attachProgramFlow(queue, { query, profile, anchors: raw.anchors || [] });
+  replanPlayableQueue(queue, brief, limit);
+  await enrichSongContexts(queue, { budgetMs: songContextBudgetMs, songContextProvider });
+  await enrichArtistContexts(queue, { budgetMs: artistContextBudgetMs, artistContextProvider });
+  attachContentPacks(queue, { brief, broadcastContext: broadcast });
+  const showTalkPlan = buildShowTalkPlan({ brief, packs: queue.map((track) => track.contentPack) });
+  queue.forEach((track, queueIndex) => {
+    track.script = buildTalkScript(track, {
+      query,
+      brief,
+      showTalkPlan,
+      profile,
+      anchors: raw.anchors || [],
+      queueIndex,
+      songContext: track.songContext,
+      broadcastContext: broadcast,
+      contentPack: track.contentPack
+    });
+    track.scriptSource = "rules";
+  });
+  await enrichQueueScripts(queue, { query, brief, showTalkPlan, profile, anchors: raw.anchors || [], budgetMs: scriptBudgetMs, broadcastContext: broadcast });
+  attachProgramFlow(queue, { query, brief, showTalkPlan, profile, anchors: raw.anchors || [] });
 
   return {
     query,
+    brief,
     rawCount: (raw.recommendations || []).length,
     rejected,
     queue,
     profile: raw.profile,
-    anchors: raw.anchors
+    anchors: raw.anchors,
+    broadcastContext: broadcast,
+    showTalkPlan
   };
+}
+
+async function resolveCandidatesIntoQueue(queue, candidates, context) {
+  const startedAt = Date.now();
+  const budgetMs = Math.max(0, context.maxWaitMs || 0);
+  for (let index = 0; index < candidates.length && queue.length < context.limit; index += 4) {
+    const timeLeft = budgetMs - (Date.now() - startedAt);
+    if (timeLeft < 500) break;
+    const batch = candidates.slice(index, index + 4);
+    const results = await Promise.allSettled(batch.map((track) => resolveWithTimeout(track, Math.min(1800, timeLeft))));
+    results.forEach((result, batchIndex) => {
+      const track = batch[batchIndex];
+      if (queue.length >= context.limit || context.usedIds.has(track.id)) return;
+      context.usedIds.add(track.id);
+      if (result.status !== "fulfilled" || !result.value) {
+        context.rejected.push({ id: track.id, title: track.title, artist: track.artist, reason: "音源不可播或匹配不可靠" });
+        return;
+      }
+      pushPlayable(queue, track, result.value, {
+        query: context.query,
+        profile: context.profile,
+        anchors: context.anchors || []
+      });
+    });
+  }
+}
+
+function hasExplicitRequestEvidence(track = {}) {
+  return (track.evidence || []).some((item) => String(item).includes("这次点名想听"));
 }
 
 function pushPlayable(queue, track, resolvedTrack, context) {
@@ -68,6 +144,9 @@ function pushPlayable(queue, track, resolvedTrack, context) {
   };
   queue.push({
     ...displayTrack,
+    programSlot: track.programSlot || "",
+    programSlotLabel: track.programSlotLabel || "",
+    programReason: track.programReason || "",
     playable: true,
     resolvedTrack,
     script: buildTalkScript(displayTrack, {
@@ -78,6 +157,25 @@ function pushPlayable(queue, track, resolvedTrack, context) {
   });
 }
 
+function attachContentPacks(queue, { brief, broadcastContext }) {
+  queue.forEach((track, index) => {
+    track.contentPack = buildTrackContentPack({
+      track,
+      brief,
+      songContext: track.songContext,
+      artistContext: track.artistContext,
+      broadcastContext,
+      previousTrack: queue[index - 1] || null,
+      nextTrack: queue[index + 1] || null
+    });
+  });
+}
+
+function replanPlayableQueue(queue, brief, limit = queue.length) {
+  const planned = planRadioQueue({ candidates: queue, brief, limit });
+  queue.splice(0, queue.length, ...planned);
+}
+
 async function enrichQueueScripts(queue, context) {
   const recentLines = [];
   const startedAt = Date.now();
@@ -86,27 +184,66 @@ async function enrichQueueScripts(queue, context) {
     const elapsed = Date.now() - startedAt;
     const timeLeft = budgetMs - elapsed;
     if (timeLeft < 650) {
+      track.scriptLlmStatus = { ok: false, reason: "budget_exhausted", timeLeft };
       recentLines.push(...(track.script?.lines || []));
       continue;
     }
     const script = await generateTalkScriptWithLlm({
       track,
-      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null, recentLines },
+      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null, recentLines, songContext: track.songContext, contentPack: track.contentPack },
       fallbackScript: track.script,
-      timeoutMs: Math.min(2400, timeLeft)
+      timeoutMs: computeLlmScriptTimeout({ index, timeLeft, budgetMs })
     });
-    if (script) {
+    if (script && !script.rejected) {
       track.script = script;
       track.scriptSource = "llm";
+      track.scriptLlmStatus = { ok: true };
       recentLines.push(...script.lines);
     } else {
+      track.scriptLlmStatus = { ok: false, reason: script?.reason || "llm_returned_null_or_timed_out", timeLeft };
       recentLines.push(...(track.script?.lines || []));
+    }
+  }
+}
+
+function computeLlmScriptTimeout({ index = 0, timeLeft = 0, budgetMs = 0 } = {}) {
+  const available = Math.max(500, Number(timeLeft) || 0);
+  if (index === 0) return Math.min(9000, available);
+  if (index <= 3 && budgetMs >= 18000) return Math.min(9000, available);
+  if (index <= 2 && budgetMs >= 12000) return Math.min(7000, available);
+  if (index === 1 && budgetMs >= 7000) return Math.min(4800, available);
+  return Math.min(4000, available);
+}
+
+async function enrichSongContexts(queue, { budgetMs = 1800, songContextProvider = fetchSongContext } = {}) {
+  const startedAt = Date.now();
+  const targets = queue.slice(0, 5);
+  for (const track of targets) {
+    const timeLeft = Math.max(0, budgetMs - (Date.now() - startedAt));
+    if (timeLeft < 250) break;
+    const songContext = await songContextProvider(track, { timeoutMs: Math.min(900, timeLeft) });
+    if (songContext?.storySummary || songContext?.hotCommentThemes?.length) {
+      track.songContext = songContext;
+    }
+  }
+}
+
+async function enrichArtistContexts(queue, { budgetMs = 1500, artistContextProvider = fetchArtistContext } = {}) {
+  const startedAt = Date.now();
+  const targets = queue.slice(0, 4);
+  for (const track of targets) {
+    const timeLeft = Math.max(0, budgetMs - (Date.now() - startedAt));
+    if (timeLeft < 250) break;
+    const artistContext = await artistContextProvider(track, { timeoutMs: Math.min(900, timeLeft) });
+    if (artistContext?.brief || artistContext?.facts?.length) {
+      track.artistContext = artistContext;
     }
   }
 }
 
 function attachProgramFlow(queue, context) {
   const usedLines = [];
+  const stockPhraseCounts = new Map();
   queue.forEach((track, index) => {
     const script = normalizeTalkScript(track.script);
     const nextTrack = queue[index + 1] || null;
@@ -115,11 +252,22 @@ function attachProgramFlow(queue, context) {
       queueIndex: index
     });
     const closing = script.closing || buildClosing(track, nextTrack, context);
-    const dedupedScript = dedupeTalkScript({
+    const deduped = dedupeTalkScript({
       ...script,
       nextTease,
       closing
-    }, usedLines);
+    }, usedLines, track);
+    if (nextTrack && !deduped.nextTease) {
+      deduped.nextTease = buildNextTease(track, nextTrack, {
+        ...context,
+        queueIndex: index
+      });
+    }
+    const dedupedScript = diversifyStockPhrases(anchorTalkScript(deduped, track, nextTrack), track, nextTrack, {
+      ...context,
+      queueIndex: index,
+      stockPhraseCounts
+    });
     const stages = buildTalkStages(dedupedScript, track);
     usedLines.push(...stages.map((stage) => stage.text).filter(Boolean));
 
@@ -131,9 +279,115 @@ function attachProgramFlow(queue, context) {
   });
 }
 
-function dedupeTalkScript(script, usedLines) {
-  const opening = isTooSimilar(script.opening, usedLines) ? "" : script.opening;
-  const bridges = (script.bridges || []).filter((line) => !isTooSimilar(line, usedLines));
+function diversifyStockPhrases(script, track, nextTrack, context = {}) {
+  const stockPhraseCounts = context.stockPhraseCounts || new Map();
+  return {
+    ...script,
+    opening: replaceRepeatedStockPhrases(script.opening, track, nextTrack, context, stockPhraseCounts),
+    bridges: (script.bridges || []).map((line) => replaceRepeatedStockPhrases(line, track, nextTrack, context, stockPhraseCounts)),
+    nextTease: replaceRepeatedStockPhrases(script.nextTease, track, nextTrack, context, stockPhraseCounts),
+    closing: replaceRepeatedStockPhrases(script.closing, track, nextTrack, context, stockPhraseCounts)
+  };
+}
+
+function replaceRepeatedStockPhrases(line, track, nextTrack, context, stockPhraseCounts) {
+  let result = sanitizeTalkCopy(line || "");
+  if (!result) return result;
+  const replacements = buildStockPhraseReplacements(track, nextTrack, context);
+  for (let pass = 0; pass < 2; pass += 1) {
+    for (const [phrase, alternates] of Object.entries(replacements)) {
+      if (!result.includes(phrase)) continue;
+      const count = stockPhraseCounts.get(phrase) || 0;
+      if (count > 0) {
+        result = result.replace(phrase, alternates[(count - 1) % alternates.length]);
+      }
+      stockPhraseCounts.set(phrase, count + 1);
+    }
+  }
+  return result;
+}
+
+function buildStockPhraseReplacements(track, nextTrack, context = {}) {
+  const title = cleanText(track?.title || "这首歌");
+  const nextTitle = cleanText(nextTrack?.title || "下一首");
+  const relation = nextTrack ? pickRelation(track, nextTrack) : "这口气";
+  return {
+    "生活不会因为一首歌的时间就散架": [
+      "没回完的消息可以先停在屏幕里",
+      "不用急着把所有事处理完",
+      `《${title}》先替你把这一小段空白垫住`
+    ],
+    "不负责劝人，只负责别太用力地陪着": [
+      "不急着讲道理，只把音量放轻一点",
+      "不替你总结今天，只让旁边那点吵慢慢退下去",
+      `《${title}》不是来讲道理的，只是把这一刻托稳一点`
+    ],
+    "不是硬转场": [
+      "不会突然把方向拧走",
+      "不会把情绪生硬折过去",
+      `会让节奏先不断开，再慢慢接到下一段`
+    ],
+    "不是为了换热闹": [
+      "不是为了把气氛突然抬高",
+      "不是为了急着换一个表情",
+      `只是让${relation}有个更自然的出口`
+    ],
+    "走到这儿，换一个角度": [
+      "让耳朵换一条路走",
+      "这里换一个更稳的速度",
+      "这一首先稳住节奏"
+    ],
+    "让耳朵换一条路走": [
+      "这里换一个更稳的速度",
+      "这一首先稳住节奏",
+      "换一个角度听"
+    ],
+    "把频道稍微拨暗一点": [
+      "这一首先稳住节奏",
+      "换一个角度听",
+      "让这段声音靠近一点"
+    ],
+    "这一首先稳住节奏": [
+      "换一个角度听",
+      "让这段声音靠近一点",
+      "这里先不急着翻篇"
+    ],
+    "换一束侧光进来": [
+      "让这段声音靠近一点",
+      "这里先不急着翻篇",
+      "把这段路走得慢一点"
+    ],
+    "如果刚才像把白天放慢": [
+      "如果前一段像把肩膀松开一点",
+      "如果刚才那首把路灯调暗了一些",
+      "如果这一路已经慢下来一点"
+    ],
+    "等这首再往后走一点": [
+      "等这一段把尾巴留住",
+      "等声音再往里收一点",
+      "等情绪自然换一口气"
+    ],
+    "别一上来就太满": [
+      "不要急着把情绪推满",
+      "先别把声音塞得太紧",
+      "让开头留一点空气"
+    ],
+    "外面，还有一层听众自己的生活": [
+      "不只属于歌手，也被听众带进自己的生活里",
+      "评论里能看到它被带进不同人的日常",
+      "被很多人放进毕业、告别或回家的具体时刻"
+    ],
+    "放在今晚里，它不像资料卡，更像有人把一句没说完的话递到耳边": [
+      "今晚听到这里，评论里的城市、车站或教室会让歌曲更具体",
+      "放在今晚，它把歌里没说透的告别或期待留出来一点",
+      "在今晚这段路上，它让一首歌多了一点真实场景"
+    ]
+  };
+}
+
+function dedupeTalkScript(script, usedLines, track = {}) {
+  const opening = mentionsTrack(script.opening, track) || !isTooSimilar(script.opening, usedLines) ? script.opening : "";
+  const bridges = (script.bridges || []).filter((line) => mentionsTrack(line, track) || !isTooSimilar(line, usedLines));
   const nextTease = isTooSimilar(script.nextTease, usedLines) ? "" : script.nextTease;
   return {
     opening: opening || bridges.shift() || script.opening,
@@ -141,6 +395,41 @@ function dedupeTalkScript(script, usedLines) {
     nextTease,
     closing: script.closing
   };
+}
+
+function anchorTalkScript(script, track, nextTrack) {
+  return {
+    ...script,
+    opening: ensureCurrentTrackAnchor(script.opening, track),
+    nextTease: nextTrack ? ensureNextTrackAnchor(script.nextTease, nextTrack) : script.nextTease
+  };
+}
+
+function ensureCurrentTrackAnchor(line, track = {}) {
+  const clean = cleanText(line || "");
+  if (!clean || mentionsTrack(clean, track)) return clean;
+  const title = cleanText(track.title || "");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  if (title && artist) return `《${title}》这首由${artist}唱出来，${clean}`;
+  if (title) return `《${title}》先放在这里，${clean}`;
+  return clean;
+}
+
+function ensureNextTrackAnchor(line, nextTrack = {}) {
+  const clean = cleanText(line || "");
+  if (!clean || mentionsTrack(clean, nextTrack)) return clean;
+  const title = cleanText(nextTrack.title || "");
+  const artist = cleanText(nextTrack.artist || "").split("/")[0].trim();
+  if (title && artist) return `${clean}，待会儿接到《${title}》和${artist}的时候，节奏会自然往前走。`;
+  if (title) return `${clean}，待会儿接到《${title}》的时候，节奏会自然往前走。`;
+  return clean;
+}
+
+function mentionsTrack(line, track = {}) {
+  const clean = cleanText(line || "");
+  const title = cleanText(track.title || "");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  return Boolean((title && clean.includes(title)) || (artist && clean.includes(artist)));
 }
 
 function normalizeTalkScript(script = {}) {
@@ -202,12 +491,6 @@ function buildTalkStages(script, track) {
       musicVolume: 0.18
     }
   ].filter((stage) => stage.text);
-  if (track.scriptSource !== "llm") {
-    return stages.filter((stage) => ["intro", "bridge", "next"].includes(stage.type)).filter((stage, index, list) => {
-      if (stage.type !== "bridge") return true;
-      return list.findIndex((item) => item.type === "bridge") === index;
-    });
-  }
   return stages;
 }
 
@@ -239,16 +522,253 @@ export function buildTalkScript(track, context = {}) {
   const query = cleanText(context.query || "");
   const frame = buildSongFrame(track, query);
   const archetype = pickTalkArchetype(frame);
-  const slotCue = buildSlotCue(query, context.queueIndex || 0);
-  const opening = chooseLine(buildOpeningOptions(frame, archetype, slotCue), `${track.id}:opening:${archetype}`, query);
-  const bridgeOne = chooseLine(buildBridgeOneOptions(frame, archetype), `${track.id}:bridge1:${frame.signature}`, query);
-  const bridgeTwo = chooseLine(buildBridgeTwoOptions(frame, archetype), `${track.id}:bridge2:${frame.signature}`, query);
+  const songCue = buildSongCue(track, frame);
+  const songNoun = buildSongNoun(track, frame);
+  const shortSongNoun = buildShortSongNoun(track);
+  const storyLine = buildStoryLine(track, context.songContext, context.broadcastContext, context);
+  const broadcastLine = buildBroadcastLine(context.broadcastContext, track, frame, context.contentPack, context.showTalkPlan);
+  const showOpening = buildShowOpeningLine(track, frame, context.contentPack, context.showTalkPlan);
+  const voiceProfile = context.showTalkPlan?.voiceProfile || getTalkVoiceProfile("default");
+  const opening = polishLineForVoice(
+    sanitizeTalkCopy(showOpening || chooseLine(buildOpeningOptions(frame, archetype, songCue), `${track.id}:opening:${archetype}`, query)),
+    { role: "opening", track, frame, voiceProfile }
+  );
+  const bridgeOne = polishLineForVoice(
+    sanitizeTalkCopy(storyLine || chooseLine(buildBridgeOneOptions(frame, archetype, shortSongNoun), `${track.id}:bridge1:${frame.signature}`, query)),
+    { role: "bridge", track, frame, voiceProfile }
+  );
+  const bridgeTwo = polishLineForVoice(
+    sanitizeTalkCopy(broadcastLine || chooseLine(buildBridgeTwoOptions(frame, archetype), `${track.id}:bridge2:${frame.signature}`, query)),
+    { role: "bridge", track, frame, voiceProfile }
+  );
 
   return {
     opening,
     bridges: [bridgeOne, bridgeTwo],
     lines: [opening, bridgeOne, bridgeTwo]
   };
+}
+
+function polishLineForVoice(line, { role = "bridge", track = {}, frame = {}, voiceProfile = getTalkVoiceProfile("default") } = {}) {
+  const clean = sanitizeTalkCopy(line);
+  const quality = scoreTalkLineQuality(clean, voiceProfile);
+  if (quality.ok) return clean;
+  const title = cleanText(track.title || "这首歌");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  const cityCue = frame.scene || "回家路上";
+  const genreCue = frame.genre || frame.secondGenre || "流行";
+  if (role === "opening") {
+    return artist
+      ? `《${title}》由${artist}唱出来，先把${cityCue}和${genreCue}这两个入口交代清楚。`
+      : `《${title}》先放在这里，把${cityCue}和${genreCue}这两个入口交代清楚。`;
+  }
+  return `《${title}》这一段不靠空话撑场，重点放在${cityCue}、${genreCue}和你这次想听的方向上。`;
+}
+
+function buildBroadcastLine(broadcastContext = {}, track = {}, frame = {}, contentPack = null, showTalkPlan = null) {
+  const timeCue = cleanText(broadcastContext?.timeCue || "");
+  const weather = cleanText(broadcastContext?.weatherSummary || "");
+  const news = cleanText(broadcastContext?.newsSummary || "");
+  const editorial = buildEditorialLine(broadcastContext, track, frame, contentPack, showTalkPlan);
+  if (editorial) return editorial;
+  if (!weather && !news) return "";
+  const prefix = timeCue ? `${timeCue}，` : "这会儿，";
+  if (weather && news) {
+    return `${prefix}${weather}；新闻里${news}。先不用急着追完所有信息，让这首歌把注意力放回耳朵里。`;
+  }
+  if (weather) {
+    return `${prefix}${weather}。天气只是背景，不抢音乐的位置，只让这一小段听起来更贴近现在。`;
+  }
+  return `${prefix}新闻里${news}。我们点到为止，不把信息塞满，把剩下的空间留给音乐。`;
+}
+
+function buildEditorialLine(broadcastContext = {}, track = {}, frame = {}, contentPack = null, showTalkPlan = null) {
+  const localScene = cleanText(broadcastContext?.localSceneSummary || "");
+  const newsBrief = pickBriefText(broadcastContext?.newsBriefs, track.id || track.title || "news");
+  const cultureBrief = pickBriefText(broadcastContext?.cultureBriefs, `${track.id || track.title || "culture"}:culture`);
+  const angles = (broadcastContext?.editorialAngles || []).map((item) => cleanText(item)).filter(Boolean);
+  const angle = angles.length ? pickBySeed(angles, `${track.id || track.title}:angle`) : "";
+  const city = cleanText(broadcastContext?.city || "");
+  const timeCue = cleanText(broadcastContext?.timeCue || "");
+  if (!localScene && !newsBrief && !cultureBrief && !angle) return "";
+  const trackScene = frame.scene || frame.secondScene || "这一段";
+  const mood = frame.mood || frame.secondMood || "现在的心情";
+  const title = cleanText(track.title || "这首歌");
+  const motif = pickShowMotif(showTalkPlan, track);
+  const concreteMotif = concreteMotifForCopy(motif);
+  const selectionCue = buildSelectionCue(contentPack || track);
+  const line = chooseLine([
+    `${city || timeCue || "这会儿"}的背景可以轻轻带一下：${stripEndingPunctuation(localScene || newsBrief)}。放回《${title}》里，${trackScene}和${mood}就不只是情绪，也像这期节目里的${concreteMotif || "一个真实城市切面"}。`,
+    `${newsBrief || localScene}。这条资讯不用展开成新闻播报，它更像给《${cleanText(track.title || "这首歌")}》加一层现实底色：人还在城市里赶路，歌里也能留下${concreteMotif || "一段清楚的回家路"}。`,
+    `${cultureBrief || localScene}。接到《${title}》时，可以把${concreteMotifForCopy(angle) || concreteMotif || "地铁口和路灯"}当成画面背景，让这首歌落在今晚的北京。`,
+    `${stripEndingPunctuation(localScene || cultureBrief)}。外面的信息很多，${newsBrief || "真正能留下来的，是人下班以后那段回家路"}；放到《${title}》旁边，${selectionCue ? `${selectionCue}，` : ""}把城市压低成一个背景，不抢歌。`
+  ].filter(Boolean), `${track.id}:editorial:${localScene}:${newsBrief}:${cultureBrief}`, frame.signature || "");
+  return tidyPunctuation(line);
+}
+
+function buildSelectionCue(packOrTrack = {}) {
+  const slot = cleanText(packOrTrack.programSlot || "");
+  const reason = cleanText(packOrTrack.selectionReason || packOrTrack.programReason || "");
+  if (slot === "story" || /热评|故事|私人记忆/.test(reason)) return "这里可以多说一点听众故事";
+  if (slot === "city" || /城市|北京|资讯/.test(reason)) return "这里可以带一点北京和资讯背景";
+  if (slot === "turn" || /换一个角度|转向/.test(reason)) return "这里把节目换到另一个角度";
+  if (slot === "closer" || /收尾|余味/.test(reason)) return "这里给这一段留一个完整收尾";
+  return "";
+}
+
+function buildShowOpeningLine(track = {}, frame = {}, contentPack = null, showTalkPlan = null) {
+  if (contentPack?.programSlot !== "opener" || !showTalkPlan?.showThesis) return "";
+  const title = cleanText(track.title || "");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  const songNoun = title && artist ? `《${title}》这首由${artist}唱出来的${[frame.genre, frame.secondGenre].filter(Boolean).join("和") || "歌"}` : title ? `《${title}》` : "这首歌";
+  const thesis = cleanText(showTalkPlan.showThesis)
+    .replace(/^这是一档关于/, "")
+    .replace(/^这是一档/, "")
+    .replace(/：.*$/, "");
+  const motif = pickShowMotif(showTalkPlan, track);
+  return `${songNoun}先开场。这期会围绕${thesis || "北京夜里的歌和故事"}来排，${concreteMotifForCopy(motif) || "地铁口、环路和下班后的几分钟"}会穿在几首歌之间。`;
+}
+
+function pickShowMotif(showTalkPlan = null, track = {}) {
+  const motifs = (showTalkPlan?.recurringMotifs || []).map((item) => cleanText(item)).filter(Boolean);
+  return pickBySeed(motifs, `${track.id || track.title || "motif"}:show-motif`) || "";
+}
+
+function concreteMotifForCopy(motif = "") {
+  const clean = cleanText(motif);
+  if (!clean) return "";
+  return clean
+    .replace(/通勤后的私人时间/g, "下班后从写字楼到地铁口那段路")
+    .replace(/耳机里的自留地/g, "耳机里这几分钟")
+    .replace(/城市夜生活和耳机里的自留地/g, "散场后的路灯和耳机里的歌")
+    .replace(/信息很多但心要慢一点/g, "资讯很多但只取和这首歌有关的一点")
+    .replace(/城市里的私人时间/g, "城市里下班后的几分钟");
+}
+
+function pickBriefText(briefs = [], seedText = "") {
+  const items = (briefs || [])
+    .map((item) => cleanText(typeof item === "string" ? item : item?.text || ""))
+    .filter(Boolean);
+  return pickBySeed(items, seedText) || "";
+}
+
+function inferBroadcastNowFromQuery(query = "") {
+  const text = cleanText(query);
+  if (/(深夜|凌晨|睡前|失眠)/.test(text)) return makeBeijingDateAtHour(23);
+  if (/(晚上|夜里|今晚|下班|回家|晚高峰)/.test(text)) return makeBeijingDateAtHour(21);
+  if (/(早上|清晨|早高峰|上班)/.test(text)) return makeBeijingDateAtHour(8);
+  if (/(中午|午休|午间)/.test(text)) return makeBeijingDateAtHour(12);
+  if (/(下午|午后)/.test(text)) return makeBeijingDateAtHour(15);
+  return new Date();
+}
+
+function makeBeijingDateAtHour(hour) {
+  return new Date(`2026-06-18T${String(hour).padStart(2, "0")}:00:00+08:00`);
+}
+
+function stripEndingPunctuation(value = "") {
+  return cleanText(value).replace(/[。；;，,]+$/g, "");
+}
+
+function tidyPunctuation(value = "") {
+  return cleanText(value)
+    .replace(/。{2,}/g, "。")
+    .replace(/；{2,}/g, "；")
+    .replace(/，{2,}/g, "，")
+    .replace(/。；/g, "；")
+    .replace(/；。/g, "。");
+}
+
+function buildStoryLine(track, songContext = {}, broadcastContext = {}, context = {}) {
+  const storySummary = cleanText(songContext?.storySummary || "");
+  const themes = (songContext?.hotCommentThemes || [])
+    .map((theme) => cleanText(theme))
+    .filter(Boolean)
+    .slice(0, 2);
+  const excerpt = pickCommentExcerpt(songContext?.commentExcerpts, track);
+  if (!storySummary && !themes.length && !excerpt) return "";
+  const title = cleanText(track.title || "");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  const trackLabel = title && artist ? `《${title}》这首歌，在${artist}的声音里` : title ? `《${title}》这首歌` : "这首歌";
+  const titleLabel = title ? `《${title}》` : "这首歌";
+  const weather = Number(context.queueIndex || 0) <= 0 ? cleanText(broadcastContext?.weatherSummary || "") : "";
+  const timeCue = cleanText(broadcastContext?.timeCue || "");
+  const contextCue = buildContextCue({ timeCue, weather });
+  const story = normalizeStorySummary(storySummary, title) || `评论里有几条很像私人故事：${themes.join("；")}。`;
+  const options = buildStoryLineOptions({ trackLabel, titleLabel, story, excerpt, contextCue, title, artist });
+  return excerpt ? options[0] : chooseLine(options, `${track.id}:story:${story}:${excerpt}`, title);
+}
+
+function buildStoryLineOptions({ trackLabel, titleLabel, story, excerpt, contextCue, title, artist }) {
+  const sceneTail = contextCue
+    ? `${contextCue}，它不像资料卡，更像有人把一句没说完的话递到耳边。`
+    : "我不直接复述原话，只借它留下一点听众真实生活的重量。";
+  const artistCue = artist ? `${artist}的声音没有替这些故事下结论，只把它们放得轻一点。` : "这首歌没有替这些故事下结论，只把它们放得轻一点。";
+  const titleCue = title ? `《${title}》` : "这首歌";
+  const excerptLine = excerpt
+    ? `评论里有一句可以放在这里：“${excerpt}” ${contextCue ? `${contextCue}，` : ""}这比单纯介绍${titleCue}更像一个真实入口。`
+    : "";
+  return [
+    excerptLine,
+    `${titleLabel}外面，还有一层听众自己的生活，${story}${sceneTail}`,
+    `评论里留下的不是统一答案，${story}${artistCue}`,
+    `如果把这首歌当成一面小小的留言墙，${story}我们听到这里就够了，不把别人的故事讲满。`,
+    `${titleCue}的好听，有一部分来自它被很多人带进了自己的生活。${story}这一段我们少解释，让音乐自己把那层关系托住。`
+  ].filter(Boolean);
+}
+
+function buildContextCue({ timeCue = "", weather = "" } = {}) {
+  const cleanTime = cleanText(timeCue);
+  const cleanWeather = cleanText(weather);
+  if (cleanTime && cleanWeather) return `${cleanTime}听，外面${cleanWeather}`;
+  if (cleanWeather) return `外面${cleanWeather}`;
+  if (cleanTime) return `${cleanTime}听`;
+  return "";
+}
+
+function pickCommentExcerpt(excerpts = [], track = {}) {
+  const items = (excerpts || [])
+    .map((item) => cleanText(typeof item === "string" ? item : item?.text || ""))
+    .filter((text) => text.length >= 8 && text.length <= 90)
+    .filter((text) => !isUnsafeCommentExcerpt(text));
+  return pickBySeed(items, `${track.id || track.title || "comment"}:excerpt`) || "";
+}
+
+function isUnsafeCommentExcerpt(text = "") {
+  return /求赞|互粉|打卡|沙发|第一|999|网易云|热评|点赞|感谢大家|谢谢大家|\[[^\]]+\]|https?:\/\//i.test(text);
+}
+
+function normalizeStorySummary(storySummary, title) {
+  const clean = cleanText(storySummary || "");
+  if (!clean) return "";
+  const titlePattern = title ? `《${escapeRegExp(title)}》下面的评论更像一组私人故事：` : "";
+  return clean
+    .replace(titlePattern ? new RegExp(titlePattern, "g") : /^$/, "")
+    .replace(/^这首歌下面的评论更像一组私人故事：/, "")
+    .trim();
+}
+
+function buildSongCue(track, frame) {
+  return `${buildSongNoun(track, frame)}，`;
+}
+
+function buildShortSongNoun(track) {
+  const title = cleanText(track.title || "");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  if (title) return `《${title}》`;
+  if (artist) return `${artist}这首歌`;
+  return "这首歌";
+}
+
+function buildSongNoun(track, frame) {
+  const title = cleanText(track.title || "");
+  const artist = cleanText(track.artist || "").split("/")[0].trim();
+  const texture = [frame.genre, frame.secondGenre].filter(Boolean).join("和") || "这首歌";
+  const scene = frame.scene || frame.secondScene || "";
+  const mood = frame.mood || frame.secondMood || "";
+  if (title && artist) return `《${title}》这首由${artist}唱出来的${texture}`;
+  if (title) return `《${title}》这首${texture}`;
+  return `${scene || mood ? `${scene}${mood}` : "这首歌"}的质感`;
 }
 
 function buildSongFrame(track, query) {
@@ -283,52 +803,52 @@ function pickTalkArchetype(frame) {
   return "steady-pop";
 }
 
-function buildOpeningOptions(frame, archetype, slotCue) {
+function buildOpeningOptions(frame, archetype, songCue) {
   const byArchetype = {
     "rnb-close": [
-      `${slotCue}刚下班的时候，耳机里最好别一上来就太满。留一点低频和呼吸的位置，人会比较容易从白天退出来。`,
-      `${slotCue}有些节奏不是催人走快，是让脚步终于有个舒服的拍子。先让这段声音贴着路走，别急着把今天总结完。`,
-      `${slotCue}手机屏幕暗下去以后，反而能听见自己还有点紧。这里适合靠近一点，像把领口松开半寸。`
+      `${songCue}R&B 的入口可以先放近一点。人刚离开白天的噪声，低频比大道理更管用。`,
+      `${songCue}不要把它当成普通情歌听。它更像下班后手机屏幕暗下来的那几秒，人终于能听见自己。`,
+      `${songCue}郑重的话先不说。让人声和节拍靠近一点，今天那些没处理完的事先退到后面。`
     ],
     "quiet-companion": [
-      `${slotCue}有时候人不是需要被劝，只是需要旁边的声音别太用力。先把音量放轻，让这几分钟像一盏不刺眼的灯。`,
-      `${slotCue}如果消息还没回完，也可以先不回。生活不会因为一首歌的时间就散架，我们先把手边的紧绷放松一点。`,
-      `${slotCue}这段不负责讲大道理，只负责把外面的噪声压低一点。你不用马上变好，先舒服一点就行。`
+      `${songCue}先按${frame.genre || "编曲"}和${frame.scene || "夜里"}这两个点听，歌手的声音比空泛安慰更具体。`,
+      `${songCue}听起来不抢人。放在回家路上，它像把白天的声音往后推了一步。`,
+      `${songCue}不用开很大声。它的好处是靠近，而不是把今晚说成一个结论。`
     ],
     "bright-pop": [
-      `${slotCue}车窗外的灯一盏盏过去，人也会想要一点明亮的东西。不是鸡血，就是让疲惫别一直闷在胸口。`,
-      `${slotCue}今天不一定要圆满收尾，但可以让心情抬头看一眼。像走出地铁口那一下，空气忽然松了一点。`,
-      `${slotCue}这会儿适合开一扇小窗，不用太热闹，只要有一点亮色，就够把路上的沉闷擦掉。`
+      `${songCue}会把车窗外的灯推亮一点。不是鸡血，就是让疲惫别一直闷在胸口。`,
+      `${songCue}让心情抬头看一眼。像走出地铁口那一下，空气忽然松了一点。`,
+      `${songCue}像开一扇小窗。不用太热闹，只要有一点亮色，就够把路上的沉闷擦掉。`
     ],
     "emotional-hold": [
-      `${slotCue}有些情绪不用马上处理，像包里那张皱掉的小票，先放着也没关系。我们不把话说重，只让它被看见一下。`,
-      `${slotCue}人累的时候，最怕别人急着给答案。这里不用答案，先给情绪一个边界，让它在旁边坐一会儿。`,
-      `${slotCue}如果今天有一点说不清的低落，先别把它归类。很多事不是想明白才过去，是慢慢不再顶着你。`
+      `${songCue}会把情绪放到台面上，但不把话说重。像包里那张皱掉的小票，先放着也没关系。`,
+      `${songCue}不给答案，先给情绪一个边界。人累的时候，最怕别人急着替你总结。`,
+      `${songCue}适合放在有点低落的时候。很多事不是想明白才过去，是先给自己几分钟缓一缓。`
     ],
     "moving-scene": [
-      `${slotCue}路上的时间很奇妙，身体在移动，脑子却还留在刚才那个房间。先让声音陪你过桥，不催你立刻到达。`,
-      `${slotCue}等红灯也好，等地铁也好，这几分钟都不必空着。让节奏先往前走一点，人就不用一直卡在白天。`,
-      `${slotCue}从公司到家的中间地带，最适合把自己慢慢捡回来。先别急着切换身份，音乐会替你走一段。`
+      `${songCue}很适合路上这段空白。身体在移动，脑子还留在刚才那个房间，先让声音陪你过桥。`,
+      `${songCue}放在等红灯或等地铁的时候刚好。让节奏先往前走一点，人就不用一直卡在白天。`,
+      `${songCue}像公司到家之间的缓冲带。先别急着切换身份，音乐会替你走一段。`
     ],
     "steady-pop": [
-      `${slotCue}这段先稳一点，不把情绪推高，也不让它掉下去。像把桌面清出一角，给自己留个能放杯子的地方。`,
-      `${slotCue}有时候好的转场不是惊喜，是让人没有负担地继续听下去。这里我们少说一点，把位置让给音乐。`,
-      `${slotCue}刚才那点状态不用重新解释。先找一个稳的拍子接住它，让耳朵知道今晚可以慢慢来。`
+      `${songCue}先稳一点，不把情绪推高，也不让它掉下去。像把桌面清出一角，给自己留个能放杯子的地方。`,
+      `${songCue}不是靠惊喜取胜，是让人没有负担地继续听下去。这里少说一点，把位置让给音乐。`,
+      `${songCue}拍子比较平，不会突然把气氛推高。现在先从这首开始，让耳朵有个清楚的入口。`
     ]
   };
   return byArchetype[archetype] || byArchetype["steady-pop"];
 }
 
-function buildBridgeOneOptions(frame, archetype) {
+function buildBridgeOneOptions(frame, archetype, songNoun) {
   return [
-    `刚才这一分钟最好的地方，是它没有急着替你下判断。很多下班后的疲惫，其实只需要先从必须回应的状态里退出来。`,
-    `我喜欢这种留白，不是空，是给人一个不用解释自己的地方。外面的声音还在，但你可以暂时不追上每一件事。`,
+    `${songNoun}的入口不复杂：${frame.genre || "编曲"}、${frame.scene || "这一段"}，再加一点人声里的停顿，就够把场景立起来。`,
+    `听${songNoun}的时候，可以先抓住${frame.genre || "编曲"}里比较清楚的那条线。它会让白天那堆声音往后退一点。`,
     frame.secondGenre
-      ? `节奏里那点轻微的摆动很有用，它会让身体先放松，脑子才跟得上。人有时候就是需要从肩膀开始慢下来。`
-      : `这里的好处是不过分煽情。它像把杯子里的水放稳，水面还会晃，但已经不会洒出来。`,
+      ? `${frame.secondGenre}里那点轻微的摆动很有用，不会抢路上的注意力，也不会把情绪往下拽。`
+      : `${songNoun}的编排不急着把情绪推满，适合放在这一段路上，让人慢慢把注意力收回来。`,
     archetype === "emotional-hold"
-      ? `如果心里还有一点堵，别急着把它讲成故事。先让它只是一点堵，不必马上变成结论。`
-      : `这种时候，音乐不用负责解决问题。它只要让你发现，自己其实还能再松一点，就已经够了。`
+      ? `如果心里还有一点堵，先别把它讲成故事。跟着这首听完，比急着解释更轻松。`
+      : `这种时候，歌不用说太满。把音量放到刚好能盖住路噪的位置，就可以了。`
   ];
 }
 
@@ -338,62 +858,76 @@ function buildBridgeTwoOptions(frame, archetype) {
     `有句老话说，不如意事常八九。听起来很旧，但有时候旧话管用，因为它允许人今天先不完美。`,
     frame.hook,
     archetype === "rnb-close"
-      ? `等节拍再往前走一点，你会发现人不是突然被治好了，只是终于没那么绷。这个差别很小，但很珍贵。`
-      : `我们不把话说满。让剩下的部分继续往前走，你只要跟着听，不用负责把这一晚变得漂亮。`
+      ? `等节拍再往前走一点，人会没那么绷。这个变化不用说大，听得到就行。`
+      : `我们不把话说满。剩下的部分留给歌曲本身，你不用急着把今晚整理出一个结论。`
   ];
 }
 
 function buildNextTease(track, nextTrack, context = {}) {
   if (!nextTrack) {
-    return chooseLine([
-      `这首后半段就不打扰太多了。等它自己收住，我再按你刚才的状态往下接。`,
-      `后面先不急着换话题，让这首歌把气口留完整。下一段我会继续顺着这个夜晚往下排。`,
-      `听到这里，我们把解释放少一点。等这首走完，电台会继续往前，不让空气突然断掉。`
+  return chooseLine([
+    `这首后半段就留给音乐。等它收住，我再按你刚才说的方向继续排。`,
+    `后面不急着换话题，让这首歌自己收完整。下一段继续按歌名、歌手和评论故事来接。`,
+    `到这里先不再补话。等这首走完，再接下一首可播的歌。`
     ], `${track.id}:final-tease`, context.query || "");
   }
 
   const nextFrame = buildSongFrame(nextTrack, cleanText(context.query || ""));
   const relation = pickRelation(track, nextTrack);
+  const nextFocus = pickNextFocus(relation, nextFrame, nextTrack);
   return chooseLine([
-    `等这首再往后走一点，我们会从${relation}里转出去。下一首是《${nextTrack.title}》，它会把${nextFrame.mood}那面接得更轻。`,
-    `这段不用硬收尾。待会儿接到《${nextTrack.title}》的时候，情绪会从${relation}慢慢换一口气。`,
-    `如果刚才像把白天放慢，那下一首《${nextTrack.title}》会负责把路继续铺开一点。我们不突然切换，只顺着走。`,
-    `后面会接《${nextTrack.title}》。不是为了换热闹，是让这段${nextFrame.scene || "夜里"}的气氛多一个角度。`
+    `等《${track.title}》收住，下一首《${nextTrack.title}》会从${relation}接到${nextFocus}。`,
+    `待会儿接到《${nextTrack.title}》时，重点换到${nextFocus}，队列不会只停在同一种说法里。`,
+    `《${nextTrack.title}》后面接上来，歌手和${nextFrame.genre || nextFrame.scene || "场景"}会给这组歌换一个具体入口。`,
+    `后面会接《${nextTrack.title}》。我会把话题从《${track.title}》的${relation}，挪到${nextFocus}。`
   ], `${track.id}:next:${nextTrack.id}`, context.query || "");
 }
 
+function pickNextFocus(relation, nextFrame = {}, nextTrack = {}) {
+  const candidates = [
+    nextFrame.scene,
+    nextFrame.genre,
+    nextFrame.secondMood,
+    cleanText(nextTrack.artist || "").split("/")[0].trim()
+  ].filter(Boolean);
+  return candidates.find((item) => item && !relation.includes(item) && item !== "情绪") || "下一首的歌手和场景";
+}
+
 function buildClosing(track, nextTrack, context = {}) {
-  if (nextTrack) return `从《${track.title}》到《${nextTrack.title}》，我们让情绪自然换挡。`;
+  if (nextTrack) return `从《${track.title}》到《${nextTrack.title}》，下一段换到歌手、曲风和评论素材来接。`;
   return chooseLine([
-    "这一段到这里就够了，别把话说满，留一点余味给后面的歌。",
+    "这一段到这里就够了，留一点余味给后面的歌。",
     "剩下的路让音乐自己走，Claudio 会继续在旁边。",
-    "今晚不用一次想清楚，听完这一首，再慢慢往下走。"
+    "今晚不用一次想清楚，听完这一首，再看下一首怎么接。"
   ], `${track.id}:closing`, context.query || "");
 }
 
 function pickRelation(track, nextTrack) {
   const sharedMood = firstSharedValue(track.moods, nextTrack.moods);
-  if (sharedMood) return `${sharedMood}这口气`;
+  if (sharedMood) return sharedMood === "情绪" ? `《${cleanText(track.title || "上一首")}》里的情绪` : `${sharedMood}的状态`;
   const sharedScene = firstSharedValue(track.scenes, nextTrack.scenes);
   if (sharedScene) return `${sharedScene}的场景`;
   const sharedGenre = firstSharedValue(track.genres, nextTrack.genres);
   if (sharedGenre) return `${sharedGenre}的质感`;
-  return "刚才这口气";
+  return `《${cleanText(track.title || "上一首")}》这一段`;
 }
 
 function buildSlotCue(query, queueIndex) {
   if (queueIndex <= 0) return buildQueryLine(query);
   return chooseLine([
-    "这里不重复刚才的情绪，",
-    "走到这儿，换一个角度，",
-    "这一首负责把气口接住，",
-    "往后一点，我想让情绪有个转身，",
-    "这里不继续往下沉，"
-  ], `slot:${queueIndex}`, query);
+    "这一首换到歌手和曲风，",
+    "这一首从评论或故事切入，",
+    "这一首把城市资讯放轻一点，",
+    "这一首用歌曲本身接上，",
+    "这一首不重复前面的场景，",
+    "这一首把重点放回歌名和声音，",
+    "这一首换到下一层素材，",
+    "这一首接住队列里的另一个角度，"
+  ], `slot:${queueIndex}:${query}`, `${queueIndex}:${query}`);
 }
 
 function buildQueryLine(query) {
-  if (!query) return "先把频道调稳。";
+  if (!query) return "先把节奏调稳。";
   if (/(下班|通勤|路上|回家|夜里|晚上)/.test(query)) {
     return "你这个状态很像一路把白天收进包里，";
   }
@@ -404,7 +938,7 @@ function buildQueryLine(query) {
     return "你想把气氛往上托一点，";
   }
   if (/(emo|难过|失眠|想哭|安静)/.test(query)) {
-    return "你现在更需要被稳稳接住，";
+    return "你现在更需要安静一点的歌，";
   }
   return "你刚才说的那句状态，我听懂了，";
 }
@@ -442,12 +976,12 @@ function pickContentHook(frame, seedText) {
       "有些心事说出来太大，不说又硌着。放在音乐里，它会变成比较柔软的形状。"
     ],
     "温柔": [
-      "温柔最好的时候不是哄人，是不催人。它允许你慢半拍，也允许你暂时没答案。",
-      "这种温柔不是糖，是把锋利的地方包一下，让人可以继续往前走。"
+      "这类温柔不用哄人，主要是不会催你。放在耳机里，适合把步子慢下来一点。",
+      "它的声音边缘比较软，不会把情绪往下压，听起来更像陪你走完这一段路。"
     ],
     "安静": [
-      "安静不是没有声音，是终于没有谁催你反应。你可以只听，不用马上给出态度。",
-      "把世界调小一点，人会比较容易听见自己真正累在哪里。"
+      "安静不是没有声音，是这首歌没有催你反应。你可以只听，不用马上给出态度。",
+      "把外面的动静调小一点，耳机里的节奏会更清楚。"
     ]
   };
   const options = [
@@ -534,6 +1068,41 @@ function signaturePhrases(value = "") {
   return phrases.filter((phrase) => clean.includes(phrase));
 }
 
+function sanitizeTalkCopy(value = "") {
+  return tidyPunctuation(cleanText(value)
+    .replace(/把频道稍微拨暗一点/g, "这里换一个更稳的速度")
+    .replace(/先把频道调稳/g, "先把节奏调稳")
+    .replace(/这一首负责把气口接住/g, "这一首先把节奏稳住")
+    .replace(/气口/g, "节奏")
+    .replace(/情绪路线/g, "这组歌")
+    .replace(/情绪换了一口气/g, "下一首换到新的歌手和素材")
+    .replace(/情绪换一口气/g, "下一首换到新的歌手和素材")
+    .replace(/换一种情绪/g, "换到下一首的歌手和素材")
+    .replace(/不急着往前走/g, "先把当前这首听完整")
+    .replace(/还挂在北京的夜晚里/g, "继续放在北京夜里的节目里")
+    .replace(/他说，评论里那一句，?/g, "")
+    .replace(/这比单纯的介绍更像一个真实入口/g, "这句评论可以把歌里的关系说得更具体")
+    .replace(/这比单纯介绍《([^》]+)》更像一个真实入口/g, "这句评论可以把《$1》说得更具体")
+    .replace(/主线/g, "线索")
+    .replace(/慢慢听/g, "先听这首")
+    .replace(/很稳/g, "比较顺")
+    .replace(/接住/g, "接上")
+    .replace(/往下走/g, "继续排")
+    .replace(/继续往前/g, "继续排")
+    .replace(/继续往下走/g, "接到下一首")
+    .replace(/继续往回走/g, "把下一首接到具体的歌名和场景上")
+    .replace(/风突然换了方向/g, "下一首会换到另一组歌手和场景")
+    .replace(/风换了方向/g, "下一首会换到另一组歌手和场景")
+    .replace(/风里多了一点胡同的味道/g, "下一首会把歌手和故事换一个角度")
+    .replace(/不急着安慰人，只把声音放到一个舒服的位置/g, "不急着讲道理，只把音量放轻一点")
+    .replace(/不负责劝人，只负责别太用力地陪着/g, "不急着讲道理，也不把情绪推得太满")
+    .replace(/先把音量放轻，让这几分钟像一盏不刺眼的灯/g, "先把音量放轻，让这几分钟留给自己")
+    .replace(/像一盏不刺眼的灯/g, "像一段不打扰人的路")
+    .replace(/换一束侧光进来/g, "换一个角度听")
+    .replace(/把声音放到一个舒服的位置/g, "把音量放轻一点")
+    .replace(/负责把/g, "先把"));
+}
+
 function hashText(text) {
   let hash = 2166136261;
   for (let index = 0; index < text.length; index += 1) {
@@ -554,6 +1123,10 @@ function nthValue(items = [], index) {
 function firstSharedValue(left = [], right = []) {
   const rightValues = new Set((right || []).map((item) => item.value).filter(Boolean));
   return (left || []).find((item) => rightValues.has(item.value))?.value || "";
+}
+
+function escapeRegExp(value = "") {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function pickBySeed(items = [], seedText = "") {

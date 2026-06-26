@@ -49,7 +49,7 @@ export function storePlayableRecord(songId, record) {
 
 function isDirtyPlayableRecord(record) {
   const haystack = `${record.title || ""} ${record.artist || ""} ${record.album || ""}`.toLowerCase();
-  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|piano|吉他|guitar|acoustic|demo|片段|试听|karaoke|instrumental|remix|dj版|montagem|电台版|剪辑|伤感版|烟嗓版|降调版|升调版|加速版|女声版|男声版/.test(haystack);
+  return /live|现场|演唱会|翻唱|翻自|cover|伴奏|纯音乐|钢琴|piano|吉他|guitar|acoustic|demo|片段|试听|karaoke|instrumental|remix|dj|montagem|电台版|剪辑|改版|伤感版|烟嗓版|降调版|升调版|加速版|慢速版|女声版|男声版|0\.8x|1\.2x/.test(haystack);
 }
 
 function isExpectedRecordMatch(songId, record, expected) {

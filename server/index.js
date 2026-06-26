@@ -3,7 +3,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { EdgeTTS } from "edge-tts-universal";
@@ -15,6 +14,7 @@ import { loadPlayableIndex, storePlayableRecord } from "./playable-index.js";
 import { buildRadioProgram } from "./radio-program.js";
 import { extractTracksFromPlaylistScreenshot, generateDialogueReplyWithLlm, getLlmStatus } from "./llm.js";
 import { tracksFromPlaylistUrl } from "./playlist-import.js";
+import { proxyAudioRequest } from "./audio-proxy.js";
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -85,39 +85,11 @@ app.post("/api/llm/config", (req, res) => {
 });
 
 app.get("/api/audio", async (req, res) => {
-  try {
-    const target = String(req.query.url || "");
-    const parsed = new URL(target);
-    if (!["http:", "https:"].includes(parsed.protocol)) {
-      res.status(400).send("bad audio url");
-      return;
-    }
-    const headers = {};
-    if (req.headers.range) {
-      headers.Range = req.headers.range;
-    }
-    const upstream = await fetch(parsed, { headers });
-    if (!upstream.ok && upstream.status !== 206) {
-      res.status(upstream.status).send("audio upstream failed");
-      return;
-    }
-    res.status(upstream.status);
-    for (const header of ["content-type", "content-length", "content-range", "accept-ranges"]) {
-      const value = upstream.headers.get(header);
-      if (value) res.setHeader(header, value);
-    }
-    if (!res.getHeader("content-type")) {
-      res.setHeader("content-type", "audio/mpeg");
-    }
-    res.setHeader("cache-control", "no-store");
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-    Readable.fromWeb(upstream.body).pipe(res);
-  } catch {
-    res.status(400).send("audio proxy failed");
-  }
+  await proxyAudioRequest({
+    target: req.query.url,
+    range: req.headers.range || "",
+    res
+  });
 });
 
 app.post("/api/tts", async (req, res) => {
@@ -207,7 +179,7 @@ app.post("/api/profile/import-screenshot", async (req, res) => {
 
 app.get("/api/recommendations", (req, res) => {
   try {
-    res.json(recommend({ query: String(req.query.q || ""), limit: Number(req.query.limit || 16) }));
+    res.json(recommend({ query: String(req.query.q || req.query.query || ""), limit: Number(req.query.limit || 16) }));
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -215,7 +187,7 @@ app.get("/api/recommendations", (req, res) => {
 
 app.get("/api/queue", async (req, res) => {
   try {
-    const query = String(req.query.q || "");
+    const query = String(req.query.q || req.query.query || "");
     const limit = Math.min(16, Math.max(1, Number(req.query.limit || 8)));
     const preheatLimit = Math.min(32, Math.max(limit * 4, 12));
     const raw = recommend({ query, limit: preheatLimit });
@@ -256,13 +228,13 @@ app.get("/api/queue", async (req, res) => {
 
 app.get("/api/program", async (req, res) => {
   try {
-    const query = String(req.query.q || "");
+    const query = String(req.query.q || req.query.query || "");
     const limit = Math.min(10, Math.max(1, Number(req.query.limit || 6)));
     const requestedWait = Number(req.query.wait || 0);
     const maxWaitMs = Number.isFinite(requestedWait) ? Math.min(8000, Math.max(0, requestedWait)) : 0;
     const refreshSeed = String(req.query.refresh || "");
-    const requestedScriptWait = Number(req.query.scriptWait || (refreshSeed ? 1200 : 4200));
-    const scriptBudgetMs = Number.isFinite(requestedScriptWait) ? Math.min(7000, Math.max(0, requestedScriptWait)) : 4200;
+    const requestedScriptWait = Number(req.query.scriptWait || (refreshSeed ? 9000 : 28000));
+    const scriptBudgetMs = Number.isFinite(requestedScriptWait) ? Math.min(32000, Math.max(0, requestedScriptWait)) : 28000;
     const avoidIds = String(req.query.avoid || "")
       .split(",")
       .map((id) => id.trim())
@@ -372,7 +344,7 @@ function cleanSpeechText(value = "") {
     .slice(0, 220);
 }
 
-app.listen(port, host, () => {
+const server = app.listen(port, host, () => {
   console.log(`Claudio Core listening at http://${host}:${port}`);
   ensureRuntimeData().catch((error) => {
     graphBootstrap = {
@@ -393,6 +365,18 @@ app.listen(port, host, () => {
     });
   }, 0);
 });
+
+server.on("error", (error) => {
+  console.error(`Claudio Core server error: ${error.message}`);
+});
+
+server.on("close", () => {
+  console.warn("Claudio Core server closed.");
+});
+
+setInterval(() => {
+  // Keep the local dev server alive when launched from background scripts.
+}, 60_000);
 
 async function ensureRuntimeData() {
   if (fs.existsSync(graphPath)) {
