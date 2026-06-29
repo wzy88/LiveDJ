@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { buildImportStatus, buildImportSummary } from "./import-summary.js";
 import { mergeQueueAfterCurrent, resolveQueueRequestAction } from "./queue-behavior.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
@@ -169,7 +170,7 @@ function App() {
       setProfile(result);
       appendDialogueMessage("user", importMode === "screenshot" ? "上传了一张歌单截图" : importMode === "text" ? "粘贴了一段歌单文字" : "导入了一个歌单链接");
       appendDialogueMessage("dj", buildImportSummary(result, extractedCount));
-      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；当前播放不会被打断。`);
+      setStatus(buildImportStatus(result, extractedCount));
     } catch (error) {
       setStatus(`歌单导入失败：${error.message}`);
       appendDialogueMessage("dj", `歌单导入失败：${error.message}`);
@@ -1223,13 +1224,6 @@ function formatDate(value) {
     month: "short",
     year: "numeric"
   }).format(new Date(value));
-}
-
-function buildImportSummary(result, extractedCount) {
-  const unmatchedCount = Math.max(0, (result.importedCount || extractedCount || 0) - (result.matchedCount || 0));
-  const playableText = result.resolvedCount ? `，其中 ${result.resolvedCount} 首已经确认可播` : "";
-  const unmatchedText = unmatchedCount ? `；还有 ${unmatchedCount} 首没匹配上，我会先用相近口味补队列` : "";
-  return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。我已经记入口味，当前播放不打断；你下次换歌或重排时我会优先参考它。`;
 }
 
 function splitTalkPages(text, maxChars) {
