@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { buildImportStatus, buildImportSummary } from "./import-summary.js";
 import { mergeQueueAfterCurrent, resolveQueueRequestAction } from "./queue-behavior.js";
+import { buildProgramReadyReply } from "./program-reply.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
 const liveDjPageChars = 96;
@@ -288,7 +289,7 @@ function App() {
       if (options.appendAfterCurrent && activeTrackRef.current) {
         setStatus(nextQueue.length ? `已把 ${nextQueue.length} 首接到当前歌曲后面。` : "这次没有找到稳定可播的后续歌曲。");
         if (options.appendDjResponse) {
-          appendDialogueMessage("dj", buildProgramReadyReply(nextQueue, { mode: "append" }));
+          appendDialogueMessage("dj", buildProgramReadyReply(result, { mode: "append", query: effectiveQuery }));
         }
         prewarmScriptAudio(mergedQueue);
       } else if (nextQueue[0]) {
@@ -297,7 +298,7 @@ function App() {
         setResolvedTrack(nextQueue[0].resolvedTrack || null);
         setDjLine(nextQueue[0].script?.opening || "新的电台队列已经排好。");
         if (options.appendDjResponse) {
-          appendDialogueMessage("dj", buildProgramReadyReply(nextQueue));
+          appendDialogueMessage("dj", buildProgramReadyReply(result, { query: effectiveQuery }));
         }
         prewarmScriptAudio(nextQueue);
       } else {
@@ -819,7 +820,7 @@ function App() {
       appendAfterCurrent
     });
     const nextQueue = program?.queue || [];
-    const reply = buildProgramReadyReply(nextQueue, { mode, program });
+    const reply = buildProgramReadyReply(program, { mode, query: nextQuery });
     appendDialogueMessage("dj", reply);
     setDjLine(reply);
     if (!appendAfterCurrent && nextQueue.length) {
@@ -839,23 +840,6 @@ function App() {
         ...meta
       }
     ]);
-  }
-
-  function buildProgramReadyReply(queue, { mode = "replace", program = null } = {}) {
-    if (program?.explicitRequestUnsatisfied?.message) {
-      return `${program.explicitRequestUnsatisfied.message} 我不会拿别的歌冒充；你可以换个歌手或换个说法，我再找。`;
-    }
-    const first = queue?.[0];
-    const rest = (queue || []).slice(1, 4).map((track) => `《${track.title}》`).join("、");
-    if (!first) return "我试着换了一轮，但这次没有找到稳定可播的歌。换个说法，我再接。";
-    if (mode === "append") {
-      return rest
-        ? `好，当前这首不打断。我把《${first.title}》接到下一首，后面再接 ${rest}。`
-        : `好，当前这首不打断。我把《${first.title}》接到下一首。`;
-    }
-    return rest
-      ? `排好了。先播《${first.title}》，后面接 ${rest}。`
-      : `排好了。先播《${first.title}》。`;
   }
 
   async function handleTransportPlay() {
