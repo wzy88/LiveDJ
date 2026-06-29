@@ -232,6 +232,22 @@ h3 {
   box-shadow: 0 16px 40px rgba(74, 224, 182, 0.2), 0 1px 0 rgba(255, 255, 255, 0.38) inset;
 }
 
+.adminEntryButton {
+  min-height: 34px;
+  padding: 0 14px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.055);
+  color: rgba(244, 240, 232, 0.58);
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.adminEntryButton:hover {
+  color: rgba(244, 240, 232, 0.84);
+  background: rgba(255, 255, 255, 0.085);
+}
+
 .llmStatusButton {
   min-height: 38px;
   padding: 0 18px;

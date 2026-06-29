@@ -33,17 +33,32 @@ test("shouldQueueAfterCurrent treats next requests as queue edits, not immediate
   );
 });
 
-test("resolveQueueRequestAction asks before replacing an active program on ambiguous music requests", () => {
+test("resolveQueueRequestAction appends ambiguous music requests during active playback", () => {
   assert.equal(
     resolveQueueRequestAction("我想听李宗盛的歌", { hasActiveTrack: true }),
-    "ask"
+    "append"
+  );
+  assert.equal(
+    resolveQueueRequestAction("播点节奏感强的提提神", { hasActiveTrack: true }),
+    "append"
   );
   assert.equal(
     resolveQueueRequestAction("后面接几首李宗盛", { hasActiveTrack: true }),
     "append"
   );
+});
+
+test("resolveQueueRequestAction only replaces active playback for explicit immediate commands", () => {
   assert.equal(
     resolveQueueRequestAction("现在立刻播放李宗盛", { hasActiveTrack: true }),
+    "replace"
+  );
+  assert.equal(
+    resolveQueueRequestAction("直接切歌，换成民谣", { hasActiveTrack: true }),
+    "replace"
+  );
+  assert.equal(
+    resolveQueueRequestAction("重新排一下今晚的节目", { hasActiveTrack: true }),
     "replace"
   );
   assert.equal(

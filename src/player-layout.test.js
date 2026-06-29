@@ -11,6 +11,16 @@ test("prompt input shows the example as placeholder instead of prefilled text", 
   assert.match(main, /<input value=\{promptText\} onChange=\{\(event\) => setPromptText\(event\.target\.value\)\} placeholder=\{query \|\| "跟 Claudio 说一句\.\.\."\} \/>/);
 });
 
+test("header keeps backend controls out of the primary user surface", () => {
+  const topActionsBlock = main.match(/<div className="topActions">[\s\S]*?<\/div>/)?.[0] || "";
+  assert.ok(topActionsBlock, "top action block should be present");
+  assert.doesNotMatch(topActionsBlock, /DeepSeek ·/);
+  assert.doesNotMatch(topActionsBlock, /连接 DeepSeek/);
+  assert.doesNotMatch(topActionsBlock, /className="tuneButton"/);
+  assert.match(topActionsBlock, /className="adminEntryButton"/);
+  assert.match(topActionsBlock, />\s*后台\s*<\/button>/);
+});
+
 test("desktop now playing copy top and transport bottom align to the cover", () => {
   const nowRailBlock = cssRule(".nowRail");
   const nowStackBlock = cssRule(".nowStack");

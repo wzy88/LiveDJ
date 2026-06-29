@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
-import { mergeQueueAfterCurrent, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
+import { mergeQueueAfterCurrent, resolveQueueRequestAction } from "./queue-behavior.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
 const liveDjPageChars = 96;
@@ -40,7 +40,6 @@ function App() {
   const [dialogueMessages, setDialogueMessages] = useState([
     { id: "dj-initial", role: "dj", text: "把你的想法丢给我，我来接歌。" }
   ]);
-  const [pendingQueueRequest, setPendingQueueRequest] = useState(null);
 
   const audioRef = useRef(null);
   const voiceRef = useRef(null);
@@ -764,9 +763,6 @@ function App() {
     appendDialogueMessage("user", nextQuery);
     setPromptText("");
     const fallbackIntent = /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat";
-    if (fallbackIntent === "music") {
-      primeAudioElement();
-    }
     const intentProbe = await fetchJson("/api/dialogue", {
       method: "POST",
       body: JSON.stringify({
@@ -792,18 +788,6 @@ function App() {
     const queueAction = resolveQueueRequestAction(nextQuery, {
       hasActiveTrack: Boolean(activeTrack)
     });
-    if (queueAction === "ask") {
-      const pending = {
-        id: `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        query: nextQuery
-      };
-      setPendingQueueRequest(pending);
-      appendDialogueMessage("dj", `我听懂了，你想接一段新的方向。要现在切过去，还是等《${activeTrack?.title || "当前这首"}》播完再接上？`, {
-        actionPromptId: pending.id
-      });
-      setStatus("等待你选择：立即切换，或播完当前这首再接上。");
-      return;
-    }
     await applyQueueRequest(nextQuery, {
       mode: queueAction === "append" ? "append" : "replace"
     });
@@ -831,14 +815,6 @@ function App() {
     if (!appendAfterCurrent && nextQueue.length) {
       await continuePlaybackFromIndex(0, nextQueue);
     }
-  }
-
-  async function resolvePendingQueueRequest(mode) {
-    if (!pendingQueueRequest?.query) return;
-    const pending = pendingQueueRequest;
-    setPendingQueueRequest(null);
-    appendDialogueMessage("user", mode === "append" ? "播完这首再接上" : "现在切过去");
-    await applyQueueRequest(pending.query, { mode });
   }
 
   function appendDialogueMessage(role, text, meta = {}) {
@@ -947,17 +923,12 @@ function App() {
               <p className="tasteSummary">{tasteSummary}</p>
             </div>
             <div className="topActions">
-              <button
-                type="button"
-                className={llmStatus?.configured ? "llmStatusButton connected" : "llmStatusButton"}
-                onClick={() => setIsLlmPanelOpen(true)}
-              >
-                {llmStatus?.configured ? `DeepSeek · ${llmStatus.model}` : "连接 DeepSeek"}
-              </button>
               <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
                 导入歌单
               </button>
-              <button type="button" className="tuneButton" aria-label="调音设置">☷</button>
+              <button type="button" className="adminEntryButton" onClick={() => setIsLlmPanelOpen(true)}>
+                后台
+              </button>
             </div>
           </header>
 
@@ -1112,12 +1083,6 @@ function App() {
                       {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
                       <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
                         <p>{message.text}</p>
-                        {message.actionPromptId && pendingQueueRequest?.id === message.actionPromptId ? (
-                          <div className="messageActions">
-                            <button type="button" onClick={() => resolvePendingQueueRequest("replace")}>立即切换</button>
-                            <button type="button" onClick={() => resolvePendingQueueRequest("append")}>播完再接</button>
-                          </div>
-                        ) : null}
                       </div>
                       {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
                     </div>

@@ -17,12 +17,16 @@ test("continuous playback prepares the media element before calling play", () =>
   assert.match(main, /await playMusicAudio\(audio, \{\s*allowMutedAutoplayRetry: Boolean\(options\.allowMutedAutoplayRetry\)\s*\}\);/);
 });
 
-test("music prompt primes audio before async dialogue and starts generated queue through autoplay path", () => {
-  assert.match(main, /if \(fallbackIntent === "music"\) \{\s*primeAudioElement\(\);\s*\}/);
-  assert.ok(
-    main.indexOf('if (fallbackIntent === "music")') < main.indexOf('const intentProbe = await fetchJson("/api/dialogue"'),
-    "music prompt must prime audio before the first awaited request"
-  );
+test("music prompt does not prime audio before queue action is resolved", () => {
+  const submitBody = main.match(/async function handlePromptSubmit\(event\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.ok(submitBody, "handlePromptSubmit body should be present");
+  assert.doesNotMatch(submitBody, /primeAudioElement\(\)/);
+});
+
+test("generated queue primes audio only for immediate replacement playback", () => {
+  const applyBody = main.match(/async function applyQueueRequest\(nextQuery, \{ mode = "replace" \} = \{\}\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.ok(applyBody, "applyQueueRequest body should be present");
+  assert.match(applyBody, /if \(!appendAfterCurrent\) \{\s*primeAudioElement\(\);\s*stopSpeechAndTimers\(\);\s*\}/);
   assert.match(main, /if \(!appendAfterCurrent && nextQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, nextQueue\);\s*\}/);
 });
 
