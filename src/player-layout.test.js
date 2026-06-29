@@ -112,6 +112,28 @@ test("frequency scope has a simple animated sweep", () => {
   assert.match(reducedMotionBlock, /\.frequencyCursorLine,\s*\n\s*\.frequencyCursorDot\s*\{[\s\S]*animation:\s*none;/);
 });
 
+test("clock panel keeps the same footprint but gains sci-fi instrument layering", () => {
+  const clockBlock = cssRule(".clockPanel");
+  const clockAfterBlock = cssRule(".clockPanel::after");
+  const readoutBeforeBlock = cssRule(".clockReadout::before");
+  const readoutAfterBlock = cssRule(".clockReadout::after");
+  const scopeBeforeBlock = cssRule(".frequencyScope::before");
+  const scopeAfterBlock = cssRule(".frequencyScope::after");
+  const reducedMotionBlock = mediaBlock("prefers-reduced-motion: reduce");
+
+  assert.match(clockBlock, /height:\s*clamp\(170px,\s*19vh,\s*214px\);/);
+  assert.match(clockBlock, /isolation:\s*isolate;/);
+  assert.match(clockBlock, /contain:\s*paint;/);
+  assert.match(clockAfterBlock, /animation:\s*clockPanelSweep 6\.8s ease-in-out infinite;/);
+  assert.match(readoutBeforeBlock, /content:\s*"TIME SYNC";/);
+  assert.match(readoutAfterBlock, /animation:\s*clockPulse 1\.8s ease-in-out infinite;/);
+  assert.match(scopeBeforeBlock, /content:\s*"SIGNAL FIELD";/);
+  assert.match(scopeAfterBlock, /background:\s*linear-gradient\(90deg,/);
+  assert.match(styles, /@keyframes clockPanelSweep/);
+  assert.match(styles, /@keyframes clockPulse/);
+  assert.match(reducedMotionBlock, /\.clockPanel::after,\s*\n\s*\.clockReadout::after\s*\{[\s\S]*animation:\s*none;/);
+});
+
 function mediaBlock(maxWidth) {
   const query = maxWidth.includes(":") ? `@media (${maxWidth})` : `@media (max-width: ${maxWidth})`;
   const start = styles.indexOf(query);

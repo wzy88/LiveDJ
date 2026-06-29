@@ -274,11 +274,21 @@ h3 {
   border-radius: 14px;
   border: 1px solid rgba(72, 224, 189, 0.28);
   background:
-    radial-gradient(circle at 72% 50%, rgba(72, 224, 189, 0.12), transparent 32%),
+    linear-gradient(90deg, rgba(72, 224, 189, 0.11) 0 1px, transparent 1px 100%),
+    linear-gradient(180deg, rgba(72, 224, 189, 0.08) 0 1px, transparent 1px 100%),
+    radial-gradient(circle at 72% 50%, rgba(72, 224, 189, 0.16), transparent 34%),
     radial-gradient(circle at 20% 22%, rgba(255, 255, 255, 0.035), transparent 38%),
-    linear-gradient(180deg, rgba(9, 14, 17, 0.92) 0%, rgba(5, 8, 10, 0.88) 100%);
+    linear-gradient(135deg, rgba(8, 21, 22, 0.94) 0%, rgba(7, 11, 14, 0.94) 48%, rgba(2, 5, 7, 0.92) 100%);
+  background-size:
+    38px 100%,
+    100% 34px,
+    auto,
+    auto,
+    auto;
   box-shadow:
     0 24px 70px rgba(0, 0, 0, 0.36),
+    0 0 46px rgba(72, 224, 189, 0.08),
+    0 0 0 1px rgba(72, 224, 189, 0.08),
     0 0 0 1px rgba(255, 255, 255, 0.035) inset;
   display: grid;
   grid-template-columns: minmax(250px, 0.72fr) minmax(320px, 1fr);
@@ -288,6 +298,8 @@ h3 {
   padding: 24px 34px;
   overflow: hidden;
   position: relative;
+  isolation: isolate;
+  contain: paint;
 }
 
 .clockPanel::before {
@@ -301,10 +313,61 @@ h3 {
   pointer-events: none;
 }
 
+.clockPanel::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(105deg, transparent 0 36%, rgba(117, 255, 219, 0.18) 48%, transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 18%, transparent 76%, rgba(72, 224, 189, 0.08));
+  mix-blend-mode: screen;
+  opacity: 0.34;
+  transform: translateX(-18%);
+  animation: clockPanelSweep 6.8s ease-in-out infinite;
+}
+
 .clockReadout,
 .frequencyScope {
   position: relative;
   z-index: 1;
+}
+
+.clockReadout {
+  display: grid;
+  align-content: center;
+}
+
+.clockReadout::before {
+  content: "TIME SYNC";
+  width: fit-content;
+  margin-bottom: 9px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(72, 224, 189, 0.22);
+  background: rgba(6, 21, 20, 0.62);
+  color: rgba(149, 255, 224, 0.82);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  box-shadow: 0 0 22px rgba(72, 224, 189, 0.08) inset;
+}
+
+.clockReadout::after {
+  content: "";
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 6px;
+  height: 54px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, transparent, rgba(72, 224, 189, 0.78), transparent);
+  box-shadow: 0 0 18px rgba(72, 224, 189, 0.42);
+  transform: translateY(-50%);
+  animation: clockPulse 1.8s ease-in-out infinite;
 }
 
 .clockDigits {
@@ -313,23 +376,38 @@ h3 {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
   font-weight: 600;
-  color: var(--accent);
-  text-shadow: 0 0 32px rgba(72, 224, 189, 0.24);
+  width: fit-content;
+  color: #56edc9;
+  text-shadow:
+    0 0 18px rgba(72, 224, 189, 0.28),
+    0 0 58px rgba(72, 224, 189, 0.16);
 }
 
 .clockDigits span {
   margin-left: 10px;
   font-size: 0.34em;
   color: #77ead0;
+  text-shadow: 0 0 22px rgba(119, 234, 208, 0.28);
 }
 
 .clockMeta {
-  display: grid;
-  gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 10px;
   color: rgba(244, 241, 234, 0.62);
   font-size: 12px;
   letter-spacing: 0;
+}
+
+.clockMeta > div {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.055);
 }
 
 .frequencyScope {
@@ -338,12 +416,56 @@ h3 {
   align-content: center;
   gap: 6px;
   min-width: 0;
+  padding: 20px 22px 14px;
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 48% 52%, rgba(72, 224, 189, 0.11), transparent 42%),
+    linear-gradient(180deg, rgba(4, 14, 16, 0.66), rgba(0, 0, 0, 0.18));
+  border: 1px solid rgba(72, 224, 189, 0.14);
+  box-shadow:
+    0 18px 48px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(255, 255, 255, 0.03) inset;
   --scan-x: 292px;
+}
+
+.frequencyScope::before {
+  content: "SIGNAL FIELD";
+  position: absolute;
+  left: 18px;
+  top: 10px;
+  color: rgba(149, 255, 224, 0.64);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.frequencyScope::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  bottom: 14px;
+  width: 112px;
+  height: 16px;
+  border-radius: 999px;
+  background: linear-gradient(90deg,
+    rgba(72, 224, 189, 0.1) 0 8px,
+    transparent 8px 13px,
+    rgba(72, 224, 189, 0.3) 13px 25px,
+    transparent 25px 30px,
+    rgba(72, 224, 189, 0.58) 30px 46px,
+    transparent 46px 51px,
+    rgba(72, 224, 189, 0.22) 51px 63px,
+    transparent 63px 70px,
+    rgba(72, 224, 189, 0.72) 70px 92px,
+    transparent 92px 100%);
+  opacity: 0.62;
+  filter: drop-shadow(0 0 10px rgba(72, 224, 189, 0.22));
 }
 
 .frequencyScope svg {
   width: 100%;
-  height: 92px;
+  height: 86px;
   overflow: visible;
 }
 
@@ -381,8 +503,8 @@ h3 {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 10px;
-  color: rgba(244, 240, 232, 0.42);
-  font-size: 12px;
+  color: rgba(244, 240, 232, 0.34);
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1254,6 +1376,32 @@ h3 {
   }
 }
 
+@keyframes clockPanelSweep {
+  0%,
+  100% {
+    transform: translateX(-18%);
+    opacity: 0.2;
+  }
+
+  50% {
+    transform: translateX(18%);
+    opacity: 0.44;
+  }
+}
+
+@keyframes clockPulse {
+  0%,
+  100% {
+    opacity: 0.34;
+    transform: translateY(-50%) scaleY(0.72);
+  }
+
+  50% {
+    opacity: 0.95;
+    transform: translateY(-50%) scaleY(1);
+  }
+}
+
 @keyframes frequencyWaveDrift {
   0% {
     stroke-dashoffset: 0;
@@ -1289,6 +1437,11 @@ h3 {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .clockPanel::after,
+  .clockReadout::after {
+    animation: none;
+  }
+
   .queueSkeleton,
   .frequencyWave,
   .frequencyCursorLine,
