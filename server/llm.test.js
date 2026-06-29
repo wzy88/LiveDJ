@@ -788,6 +788,57 @@ test("talk script surfaces LLM HTTP errors for production diagnostics", async ()
   assert.match(script.reason, /thinking parameter/);
 });
 
+test("talk script keeps a song-anchored opening even when city background is similar", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                opening: "《我本将心向明月》和王朝1982放在北京今晚回家路上，地铁口和环路还是背景。",
+                bridges: [
+                  "这首歌把流行、夜晚和歌手声音放在一起，不再复读前一首。",
+                  "评论故事不够时，就把重点放回《我本将心向明月》的歌手和曲风。"
+                ],
+                nextTease: "下一首继续接。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "我本将心向明月",
+      artist: "王朝1982 / 朱旭BooBoo",
+      evidence: [],
+      sources: []
+    },
+    context: {
+      query: "北京晚上回家路上",
+      recentLines: [
+        "《晚安》和颜人中放在北京今晚回家路上，地铁口和环路还是背景。",
+        "《知我》和国风堂放在北京今晚回家路上，地铁口和环路还是背景。"
+      ]
+    },
+    fallbackScript: {
+      opening: "先从这首开始。",
+      bridges: ["这里慢一点。"],
+      nextTease: "后面继续顺着走。",
+      closing: ""
+    },
+    timeoutMs: 1000
+  });
+
+  assert.equal(script.rejected, undefined);
+  assert.match(script.opening, /我本将心向明月|王朝1982/);
+});
+
 test("talk script prompt passes structured editorial context for richer radio scripts", async () => {
   let capturedPayload = null;
   globalThis.fetch = async (_url, options) => {

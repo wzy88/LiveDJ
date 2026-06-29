@@ -219,7 +219,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
     ).slice(0, 150) || fallbackScript.nextTease || "";
     const closing = sanitizeTalkClaim(cleanLine(parsed.closing), sanitizerContext).slice(0, 120) || fallbackScript.closing || "";
     const recentLines = (context.recentLines || []).map((line) => cleanLine(line));
-    if (isTooSimilarToRecent(opening, recentLines)) return makeRejectedScript("opening_too_similar");
+    if (!mentionsTrack(opening, track) && isTooSimilarToRecent(opening, recentLines)) return makeRejectedScript("opening_too_similar");
     if (!opening || bridges.length < 1) return makeRejectedScript(!opening ? "missing_opening" : "missing_bridge");
     let nextBridges = (bridges.length >= 2 ? bridges : [...bridges, fallbackScript.bridges?.[1]].filter(Boolean).slice(0, 2))
       .filter((line) => !isTooSimilarToRecent(line, recentLines));
