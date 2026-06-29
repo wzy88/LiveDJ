@@ -165,6 +165,64 @@ test("program can give the first three talk scripts enough time for LLM when bud
   }
 });
 
+test("final program rewrites repeated LLM city-background openings across the same show", async () => {
+  const originalFetch = globalThis.fetch;
+  let llmCalls = 0;
+  globalThis.fetch = async (url, options = {}) => {
+    if (!String(url).includes("/chat/completions")) {
+      return originalFetch(url);
+    }
+    llmCalls += 1;
+    const payload = JSON.parse(options.body || "{}");
+    const userPayload = JSON.parse(payload.messages?.[1]?.content || "{}");
+    const title = userPayload.track?.title || `第${llmCalls}首`;
+    const artist = userPayload.track?.artist || "歌手";
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                opening: `《${title}》是${artist}唱的，今晚北京的通勤尾声还挂在地铁和环路上，写字楼的灯慢慢暗下去，这首歌适合放在回家路上那十几分钟。`,
+                bridges: [
+                  `《${title}》这一段把重点放回歌手和歌曲本身，不再复读前一首。`,
+                  `${artist}的声音接到这首歌里，和你这次想听的方向贴近。`
+                ],
+                nextTease: `等《${title}》收住，再接下一首。`,
+                closing: ""
+              })
+            }
+          }
+        ]
+      })
+    };
+  };
+
+  try {
+    const program = await buildRadioProgram({
+      query: "北京晚上回家路上，想听点有故事的民谣，可以带点新闻、热评",
+      limit: 3,
+      maxWaitMs: 6500,
+      scriptBudgetMs: 18000,
+      songContextBudgetMs: 0,
+      artistContextBudgetMs: 0,
+      refreshSeed: "repeated-llm-city-background-test"
+    });
+
+    assert.ok(llmCalls >= 3);
+    assert.deepEqual(program.queue.slice(0, 3).map((track) => track.scriptSource), ["llm", "llm", "llm"]);
+    const joined = program.queue.slice(0, 3).flatMap((track) => track.script?.lines || []).join("\n");
+    assert.ok(countOccurrences(joined, "今晚北京的通勤尾声") <= 1, joined);
+    assert.ok(countOccurrences(joined, "地铁和环路") <= 1, joined);
+    for (const track of program.queue.slice(0, 3)) {
+      assert.match(track.script?.opening || "", new RegExp(`${escapeRegExp(track.title)}|${escapeRegExp(String(track.artist).split("/")[0].trim())}`));
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("program honors explicit genre requests when building the playable queue", async () => {
   const program = await buildRadioProgram({
     query: "我想听民谣",
