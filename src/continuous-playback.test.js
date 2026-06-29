@@ -32,8 +32,25 @@ test("silent audio priming does not mark the real player as playing", () => {
   assert.match(main, /if \(audioPrimingRef\.current\) \{\s*setIsPlaying\(false\);\s*return;\s*\}/);
 });
 
-test("queue generation can opt into autoplay after a user gesture", () => {
+test("queue generation can opt into autoplay after an explicit music request", () => {
   assert.match(main, /async function loadRecommendations\(queryOverride = query, options = \{\}\)/);
   assert.match(main, /if \(options\.autoStart && !options\.appendAfterCurrent && mergedQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, mergedQueue\);\s*\}/);
-  assert.match(main, /await loadRecommendations\("根据我刚导入的歌单，排一段最贴近我口味的电台", \{ appendDjResponse: true, autoStart: true \}\);/);
+});
+
+test("playlist import updates taste profile without interrupting the active program", () => {
+  const importBody = main.match(/async function importPlaylist\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.ok(importBody, "importPlaylist body should be present");
+  assert.doesNotMatch(importBody, /primeAudioElement\(\)/);
+  assert.doesNotMatch(importBody, /loadRecommendations\(/);
+  assert.doesNotMatch(main, /导入并重排|现在按你的歌单重排/);
+});
+
+test("playlist import closes the modal before waiting on network import", () => {
+  const importBody = main.match(/async function importPlaylist\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.ok(importBody, "importPlaylist body should be present");
+  assert.match(importBody, /const validationError = validatePlaylistImportInput/);
+  assert.ok(
+    importBody.indexOf("setIsImportPanelOpen(false);") < importBody.indexOf("await importPlaylist"),
+    "modal should close before the first awaited import request"
+  );
 });

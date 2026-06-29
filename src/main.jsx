@@ -151,7 +151,14 @@ function App() {
   }
 
   async function importPlaylist() {
+    const validationError = validatePlaylistImportInput();
+    if (validationError) {
+      setStatus(validationError);
+      return;
+    }
+
     setIsImporting(true);
+    setIsImportPanelOpen(false);
     setStatus("正在把你的歌单映射到歌曲图谱...");
     try {
       const result = importMode === "screenshot"
@@ -163,16 +170,20 @@ function App() {
       setProfile(result);
       appendDialogueMessage("user", importMode === "screenshot" ? "上传了一张歌单截图" : importMode === "text" ? "粘贴了一段歌单文字" : "导入了一个歌单链接");
       appendDialogueMessage("dj", buildImportSummary(result, extractedCount));
-      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；我会用这些口味信号找稳定可播的队列。`);
-      primeAudioElement();
-      await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true, autoStart: true });
-      setIsImportPanelOpen(false);
+      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；当前播放不会被打断。`);
     } catch (error) {
       setStatus(`歌单导入失败：${error.message}`);
       appendDialogueMessage("dj", `歌单导入失败：${error.message}`);
     } finally {
       setIsImporting(false);
     }
+  }
+
+  function validatePlaylistImportInput() {
+    if (importMode === "screenshot" && !playlistImageDataUrl) return "请先上传歌单截图。";
+    if (importMode === "text" && !playlistText.trim()) return "请先粘贴歌单文字，每行像“歌名 - 歌手”。";
+    if (importMode === "link" && !playlistUrl.trim()) return "请先粘贴歌单链接。";
+    return "";
   }
 
   async function saveLlmConfig() {
@@ -1173,7 +1184,7 @@ function App() {
             <div className="modalActions">
               <button type="button" onClick={() => setIsImportPanelOpen(false)}>取消</button>
               <button type="button" className="primaryAction" onClick={importPlaylist} disabled={isImporting}>
-                {isImporting ? "导入中" : "导入并重排"}
+                {isImporting ? "导入中" : "导入"}
               </button>
             </div>
             <pre>{profileText}</pre>
@@ -1253,7 +1264,7 @@ function buildImportSummary(result, extractedCount) {
   const unmatchedCount = Math.max(0, (result.importedCount || extractedCount || 0) - (result.matchedCount || 0));
   const playableText = result.resolvedCount ? `，其中 ${result.resolvedCount} 首已经确认可播` : "";
   const unmatchedText = unmatchedCount ? `；还有 ${unmatchedCount} 首没匹配上，我会先用相近口味补队列` : "";
-  return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。现在按你的歌单重排。`;
+  return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。我已经记入口味，当前播放不打断；你下次换歌或重排时我会优先参考它。`;
 }
 
 function splitTalkPages(text, maxChars) {
