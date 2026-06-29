@@ -304,6 +304,7 @@ function replaceRepeatedStockPhrases(line, track, nextTrack, context, stockPhras
       stockPhraseCounts.set(phrase, count + 1);
     }
   }
+  result = replaceRepeatedCityBackground(result, track, context, stockPhraseCounts);
   return result;
 }
 
@@ -381,8 +382,71 @@ function buildStockPhraseReplacements(track, nextTrack, context = {}) {
       "今晚听到这里，评论里的城市、车站或教室会让歌曲更具体",
       "放在今晚，它把歌里没说透的告别或期待留出来一点",
       "在今晚这段路上，它让一首歌多了一点真实场景"
+    ],
+    "今晚北京的通勤尾声": [
+      "这一次把北京背景收轻一点",
+      "这首先不再重复城市开场",
+      "这里把镜头放回歌和歌手"
+    ],
+    "北京今晚的通勤尾声": [
+      "这一次把北京背景收轻一点",
+      "这首先不再重复城市开场",
+      "这里把镜头放回歌和歌手"
+    ],
+    "地铁和环路": [
+      "歌曲自己的画面",
+      "歌手声音里的细节",
+      "这首歌的场景"
+    ],
+    "地铁口和环路": [
+      "歌曲自己的画面",
+      "歌手声音里的细节",
+      "这首歌的场景"
+    ],
+    "写字楼的灯慢慢暗下去": [
+      "别让同一段城市背景抢走音乐",
+      "让开场少一点模板味",
+      "把注意力留给这首歌本身"
+    ],
+    "这首歌适合放在回家路上那十几分钟": [
+      "可以把注意力放回这首歌本身",
+      "先听它和上一首不同的地方",
+      "让这一段从歌手和声音开始"
     ]
   };
+}
+
+function replaceRepeatedCityBackground(line, track, context = {}, stockPhraseCounts = new Map()) {
+  const clean = cleanText(line || "");
+  if (!clean || !mentionsRepeatedCityBackground(clean, stockPhraseCounts)) return clean;
+  const title = cleanText(track?.title || "这首歌");
+  const artist = cleanText(track?.artist || "").split("/")[0].trim();
+  const genre = firstValue(track?.genres) || nthValue(track?.genres, 1) || "这类声音";
+  const scene = firstValue(track?.scenes) || "这一段";
+  const mood = firstValue(track?.moods) || "当前状态";
+  const queueIndex = Number(context.queueIndex || 0);
+  const options = [
+    artist
+      ? `《${title}》这里不再重复北京背景，先听${artist}的声音怎样把${genre}和${scene}接在一起。`
+      : `《${title}》这里不再重复北京背景，先听它怎样把${genre}和${scene}接在一起。`,
+    `《${title}》这一段把镜头从城市切回歌曲本身，重点放在${genre}、${mood}和你这次想听的方向。`,
+    artist
+      ? `到《${title}》和${artist}这里，城市只留作底色，真正要听的是这首歌和前一首不同的纹理。`
+      : `到《${title}》这里，城市只留作底色，真正要听的是这首歌和前一首不同的纹理。`
+  ];
+  return options[queueIndex % options.length];
+}
+
+function mentionsRepeatedCityBackground(line, stockPhraseCounts = new Map()) {
+  const repeatedSignals = [
+    "今晚北京的通勤尾声",
+    "北京今晚的通勤尾声",
+    "地铁和环路",
+    "地铁口和环路",
+    "写字楼的灯慢慢暗下去",
+    "这首歌适合放在回家路上那十几分钟"
+  ];
+  return repeatedSignals.some((signal) => line.includes(signal) && (stockPhraseCounts.get(signal) || 0) > 1);
 }
 
 function dedupeTalkScript(script, usedLines, track = {}) {
