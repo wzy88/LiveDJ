@@ -9,6 +9,7 @@ import { buildProgramBrief } from "./program-brief.js";
 import { planRadioQueue } from "./queue-planner.js";
 import { buildShowTalkPlan, buildTrackContentPack } from "./content-pack.js";
 import { getTalkVoiceProfile, scoreTalkLineQuality } from "./talk-voice.js";
+import { buildTalkBrief } from "./talk-brief.js";
 
 export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, refreshSeed = "", avoidIds = [], scriptBudgetMs = 28000, songContextBudgetMs = 1800, artistContextBudgetMs = 1500, broadcastContext = null, songContextProvider = fetchSongContext, artistContextProvider = fetchArtistContext, playableResolver = resolvePlayableTrack } = {}) {
   const profile = loadProfile();
@@ -92,6 +93,7 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, 
   await enrichArtistContexts(queue, { budgetMs: artistContextBudgetMs, artistContextProvider });
   attachContentPacks(queue, { brief, broadcastContext: broadcast });
   const showTalkPlan = buildShowTalkPlan({ brief, packs: queue.map((track) => track.contentPack) });
+  attachTalkBriefs(queue, { query, brief, broadcastContext: broadcast });
   queue.forEach((track, queueIndex) => {
     track.script = buildTalkScript(track, {
       query,
@@ -102,7 +104,8 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, 
       queueIndex,
       songContext: track.songContext,
       broadcastContext: broadcast,
-      contentPack: track.contentPack
+      contentPack: track.contentPack,
+      talkBrief: track.talkBrief
     });
     track.scriptSource = "rules";
   });
@@ -205,6 +208,20 @@ function attachContentPacks(queue, { brief, broadcastContext }) {
   });
 }
 
+function attachTalkBriefs(queue, { query, brief, broadcastContext }) {
+  queue.forEach((track, index) => {
+    track.talkBrief = buildTalkBrief({
+      query,
+      queueIndex: index,
+      track,
+      nextTrack: queue[index + 1] || null,
+      brief,
+      contentPack: track.contentPack,
+      broadcastContext
+    });
+  });
+}
+
 function replanPlayableQueue(queue, brief, limit = queue.length) {
   const planned = planRadioQueue({ candidates: queue, brief, limit });
   queue.splice(0, queue.length, ...planned);
@@ -224,7 +241,7 @@ async function enrichQueueScripts(queue, context) {
     }
     const script = await generateTalkScriptWithLlm({
       track,
-      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null, recentLines, songContext: track.songContext, contentPack: track.contentPack },
+      context: { ...context, queueIndex: index, nextTrack: queue[index + 1] || null, recentLines, songContext: track.songContext, contentPack: track.contentPack, talkBrief: track.talkBrief },
       fallbackScript: track.script,
       timeoutMs: computeLlmScriptTimeout({ index, timeLeft, budgetMs })
     });
@@ -297,11 +314,11 @@ function attachProgramFlow(queue, context) {
         queueIndex: index
       });
     }
-    const dedupedScript = diversifyStockPhrases(anchorTalkScript(deduped, track, nextTrack), track, nextTrack, {
+    const dedupedScript = sanitizeFinalTalkScript(diversifyStockPhrases(anchorTalkScript(deduped, track, nextTrack), track, nextTrack, {
       ...context,
       queueIndex: index,
       stockPhraseCounts
-    });
+    }));
     const stages = buildTalkStages(dedupedScript, track);
     usedLines.push(...stages.map((stage) => stage.text).filter(Boolean));
 
@@ -311,6 +328,16 @@ function attachProgramFlow(queue, context) {
       lines: stages.map((stage) => stage.text).filter(Boolean)
     };
   });
+}
+
+function sanitizeFinalTalkScript(script = {}) {
+  return {
+    ...script,
+    opening: sanitizeTalkCopy(script.opening || ""),
+    bridges: (script.bridges || []).map((line) => sanitizeTalkCopy(line)).filter(Boolean),
+    nextTease: sanitizeTalkCopy(script.nextTease || ""),
+    closing: sanitizeTalkCopy(script.closing || "")
+  };
 }
 
 function diversifyStockPhrases(script, track, nextTrack, context = {}) {
@@ -1179,6 +1206,9 @@ function sanitizeTalkCopy(value = "") {
     .replace(/不急着往前走/g, "先把当前这首听完整")
     .replace(/还挂在北京的夜晚里/g, "继续放在北京夜里的节目里")
     .replace(/他说，评论里那一句，?/g, "")
+    .replace(/别让同一段城市背景抢走音乐[，。；]?/g, "")
+    .replace(/这一次把北京背景收轻一点[，。；]?/g, "")
+    .replace(/这首先不再重复城市开场[，。；]?/g, "")
     .replace(/这比单纯的介绍更像一个真实入口/g, "这句评论可以把歌里的关系说得更具体")
     .replace(/这比单纯介绍《([^》]+)》更像一个真实入口/g, "这句评论可以把《$1》说得更具体")
     .replace(/主线/g, "线索")

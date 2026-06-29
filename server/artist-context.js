@@ -21,13 +21,15 @@ export function summarizeArtistContext({ track = {}, detail = null, description 
     detail?.artist?.name ||
     firstArtistName(track.artist)
   );
-  const brief = cleanText(
+  const rawBrief = cleanText(
     detail?.data?.artist?.briefDesc ||
     detail?.artist?.briefDesc ||
     description?.briefDesc ||
     ""
   ).slice(0, 120);
+  const brief = isSpamArtistFact(rawBrief) ? "" : rawBrief;
   const facts = extractIntroductionFacts(description)
+    .filter((item) => !isSpamArtistFact(item))
     .filter((item) => item && item !== brief)
     .slice(0, 3);
   if (!name && !brief && !facts.length) return emptyArtistContext();
@@ -69,6 +71,10 @@ function extractIntroductionFacts(description = {}) {
     .filter(Boolean)
     .map((text) => text.slice(0, 110))
     .slice(0, 4);
+}
+
+function isSpamArtistFact(value = "") {
+  return /(?:群加|加群|vx|微信|微.?信|qq|QQ|非本人|本人不在|私信|联系|[a-z0-9._-]{4,}\d{2,})/i.test(value);
 }
 
 function firstArtistName(value = "") {

@@ -554,6 +554,58 @@ test("talk script sanitizer removes unsupported comment attribution variants", a
   assert.match(joined, /评论里有一句：去年冬天在北京北站等车/);
 });
 
+test("talk script sanitizer removes internal repair wording from LLM copy", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                opening: "凤凰传奇的《策马奔腾 桑巴舞曲版》今晚在北京的小雨里开场，别让同一段城市背景抢走音乐。",
+                bridges: [
+                  "这一次把北京背景收轻一点，先听玲花和曾毅的声音。",
+                  "这首先不再重复城市开场，评论里有一句：我猜肯定会有人搜凤凰传奇顺便点了我一下。"
+                ],
+                nextTease: "下一首继续接。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "策马奔腾 桑巴舞曲版",
+      artist: "凤凰传奇",
+      evidence: [],
+      sources: []
+    },
+    context: {
+      query: "凤凰传奇 开车 北京 犯困",
+      songContext: {
+        commentExcerpts: [
+          { text: "我猜肯定会有人搜凤凰传奇顺便点了我一下。", theme: "幽默/国民度" }
+        ]
+      }
+    },
+    fallbackScript: {
+      opening: "先从这首开始。",
+      bridges: ["这里慢一点。"],
+      nextTease: "后面继续顺着走。",
+      closing: ""
+    }
+  });
+
+  const joined = script.lines.join("\n");
+  assert.doesNotMatch(joined, /别让同一段城市背景抢走音乐|这一次把北京背景收轻一点|不再重复城市开场/);
+  assert.match(joined, /凤凰传奇|策马奔腾/);
+});
+
 test("talk script prompt passes provided broadcast context only", async () => {
   let capturedPayload = null;
   globalThis.fetch = async (_url, options) => {
