@@ -193,7 +193,9 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(Math.max(500, timeoutMs))
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return makeRejectedScript(await buildLlmHttpErrorReason(response));
+    }
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || "";
     const parsed = JSON.parse(content);
@@ -242,6 +244,18 @@ function makeRejectedScript(reason) {
     rejected: true,
     reason
   };
+}
+
+async function buildLlmHttpErrorReason(response) {
+  const status = response?.status || "unknown";
+  const body = await response.text().catch(() => "");
+  return `llm_http_${status}:${cleanLine(redactSecrets(body)).slice(0, 160)}`;
+}
+
+function redactSecrets(value = "") {
+  return String(value)
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-***")
+    .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer ***");
 }
 
 function providerPayloadOptions(config = {}) {

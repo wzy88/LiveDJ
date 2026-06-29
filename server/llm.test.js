@@ -751,6 +751,43 @@ test("talk script disables DeepSeek v4 thinking mode for realtime JSON output", 
   assert.deepEqual(capturedPayload.thinking, { type: "disabled" });
 });
 
+test("talk script surfaces LLM HTTP errors for production diagnostics", async () => {
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 400,
+    async text() {
+      return JSON.stringify({
+        error: {
+          message: "model does not support thinking parameter"
+        }
+      });
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "于是",
+      artist: "郑润泽",
+      evidence: [],
+      sources: []
+    },
+    context: {
+      query: "北京晚上回家路上"
+    },
+    fallbackScript: {
+      opening: "先从这首开始。",
+      bridges: ["这里慢一点。"],
+      nextTease: "后面继续顺着走。",
+      closing: ""
+    },
+    timeoutMs: 1000
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /llm_http_400/);
+  assert.match(script.reason, /thinking parameter/);
+});
+
 test("talk script prompt passes structured editorial context for richer radio scripts", async () => {
   let capturedPayload = null;
   globalThis.fetch = async (_url, options) => {
