@@ -66,12 +66,34 @@ test("live dj uses paged three-line copy in a fixed-height module", () => {
   assert.match(liveDjTextBlock, /display:\s*-webkit-box;/);
   assert.match(liveDjTextBlock, /-webkit-line-clamp:\s*3;/);
   assert.match(liveDjTextBlock, /max-height:\s*calc\(1\.62em \* 3\);/);
-  assert.match(liveDjTextBlock, /font-size:\s*clamp\(20px,\s*1\.45vw,\s*28px\);/);
+  assert.match(liveDjTextBlock, /font-size:\s*16px;/);
   assert.match(liveDjTextBlock, /width:\s*min\(100%,\s*980px\);/);
   assert.match(liveDjTextBlock, /padding-right:\s*58px;/);
   assert.match(talkControlsBlock, /margin-top:\s*18px;/);
 }
 );
+
+test("live dj desktop layout contract catches oversized copy and flexible height regressions", () => {
+  assertLiveDjDesktopContract(styles);
+
+  const oversizedCopyStyles = styles.replace(
+    /(\.liveDjText\s*\{[\s\S]*?font-size:\s*)16px;/,
+    "$128px;"
+  );
+  assert.throws(
+    () => assertLiveDjDesktopContract(oversizedCopyStyles),
+    /Live DJ text font size/
+  );
+
+  const flexiblePanelStyles = styles.replace(
+    /(\.liveDjPanel\s*\{[\s\S]*?height:\s*)214px;/,
+    "$1auto;"
+  );
+  assert.throws(
+    () => assertLiveDjDesktopContract(flexiblePanelStyles),
+    /Live DJ panel height/
+  );
+});
 
 test("frequency scope has a simple animated sweep", () => {
   const frequencyBlock = cssRule(".frequencyScope", "--scan-x");
@@ -104,4 +126,54 @@ function cssRule(selector, containing = "") {
   const match = containing ? matches.find((block) => block.includes(containing)) : matches[0];
   assert.ok(match, `missing css rule ${selector}${containing ? ` containing ${containing}` : ""}`);
   return match;
+}
+
+function assertLiveDjDesktopContract(css) {
+  const panel = finalDesktopDeclarations(css, ".liveDjPanel");
+  const text = finalDesktopDeclarations(css, ".liveDjText");
+  const controls = finalDesktopDeclarations(css, ".talkControls");
+
+  assert.equal(panel.height, "214px", "Live DJ panel height must stay fixed");
+  assert.equal(panel["min-height"], "214px", "Live DJ panel min-height must stay fixed");
+  assert.equal(panel.flex, "0 0 214px", "Live DJ panel flex-basis must stay fixed");
+  assert.equal(panel["grid-template-rows"], "minmax(0, 1fr) auto", "Live DJ panel must reserve a stable controls row");
+
+  assert.equal(text["font-size"], "16px", "Live DJ text font size must stay body-sized");
+  assert.equal(text["line-height"], "1.62", "Live DJ text line-height must stay predictable");
+  assert.equal(text.display, "-webkit-box", "Live DJ text must use line clamping");
+  assert.equal(text["-webkit-line-clamp"], "3", "Live DJ text must clamp to three lines");
+  assert.equal(text["-webkit-box-orient"], "vertical", "Live DJ text clamp orientation must stay vertical");
+  assert.equal(text["max-height"], "calc(1.62em * 3)", "Live DJ text max height must match three lines");
+  assert.equal(text.overflow, "hidden", "Live DJ text overflow must be hidden");
+
+  assert.equal(controls["margin-top"], "18px", "Live DJ controls spacing must stay stable");
+}
+
+function finalDesktopDeclarations(css, selector) {
+  const declarations = {};
+  const source = desktopCss(css);
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\\ /g, "\\s+");
+  const rulePattern = new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\n\\}`, "g");
+  for (const match of source.matchAll(rulePattern)) {
+    Object.assign(declarations, parseDeclarations(match[1]));
+  }
+  assert.ok(Object.keys(declarations).length, `missing desktop declarations for ${selector}`);
+  return declarations;
+}
+
+function desktopCss(css) {
+  const responsiveStart = css.search(/\n@media \(max-width:/);
+  return responsiveStart === -1 ? css : css.slice(0, responsiveStart);
+}
+
+function parseDeclarations(block) {
+  return block.split("\n").reduce((result, line) => {
+    const trimmed = line.trim();
+    const separator = trimmed.indexOf(":");
+    if (separator === -1) return result;
+    const property = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/;$/, "");
+    if (property && value) result[property] = value;
+    return result;
+  }, {});
 }

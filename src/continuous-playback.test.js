@@ -25,3 +25,15 @@ test("music prompt primes audio before async dialogue and starts generated queue
   );
   assert.match(main, /if \(!appendAfterCurrent && nextQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, nextQueue\);\s*\}/);
 });
+
+test("silent audio priming does not mark the real player as playing", () => {
+  assert.match(main, /const audioPrimingRef = useRef\(false\);/);
+  assert.match(main, /audioPrimingRef\.current = true;\s*audioRef\.current\.src = silentUrlRef\.current;/);
+  assert.match(main, /if \(audioPrimingRef\.current\) \{\s*setIsPlaying\(false\);\s*return;\s*\}/);
+});
+
+test("queue generation can opt into autoplay after a user gesture", () => {
+  assert.match(main, /async function loadRecommendations\(queryOverride = query, options = \{\}\)/);
+  assert.match(main, /if \(options\.autoStart && !options\.appendAfterCurrent && mergedQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, mergedQueue\);\s*\}/);
+  assert.match(main, /await loadRecommendations\("根据我刚导入的歌单，排一段最贴近我口味的电台", \{ appendDjResponse: true, autoStart: true \}\);/);
+});

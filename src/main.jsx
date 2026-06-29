@@ -48,6 +48,7 @@ function App() {
   const queueRef = useRef([]);
   const talkTimersRef = useRef([]);
   const silentUrlRef = useRef("");
+  const audioPrimingRef = useRef(false);
   const programPromiseRef = useRef(null);
   const speechSeqRef = useRef(0);
   const latestQueryRef = useRef(query);
@@ -104,6 +105,10 @@ function App() {
     const audio = audioRef.current;
     if (!audio) return undefined;
     const sync = () => {
+      if (audioPrimingRef.current) {
+        setIsPlaying(false);
+        return;
+      }
       setIsPlaying(Boolean(!audio.paused && !audio.ended));
     };
     audio.addEventListener("play", sync);
@@ -159,7 +164,8 @@ function App() {
       appendDialogueMessage("user", importMode === "screenshot" ? "上传了一张歌单截图" : importMode === "text" ? "粘贴了一段歌单文字" : "导入了一个歌单链接");
       appendDialogueMessage("dj", buildImportSummary(result, extractedCount));
       setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；我会用这些口味信号找稳定可播的队列。`);
-      await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
+      primeAudioElement();
+      await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true, autoStart: true });
       setIsImportPanelOpen(false);
     } catch (error) {
       setStatus(`歌单导入失败：${error.message}`);
@@ -291,6 +297,9 @@ function App() {
       if (!options.appendAfterCurrent) {
         setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
       }
+      if (options.autoStart && !options.appendAfterCurrent && mergedQueue.length) {
+        await continuePlaybackFromIndex(0, mergedQueue);
+      }
       return result;
     } finally {
       setIsLoadingQueue(false);
@@ -379,6 +388,7 @@ function App() {
       audio.load();
       audio.loop = false;
       audio.muted = false;
+      audioPrimingRef.current = false;
       audio.preload = "auto";
       audio.volume = musicVolume;
       try {
@@ -451,6 +461,7 @@ function App() {
     if (!silentUrlRef.current) {
       silentUrlRef.current = createSilentWavUrl();
     }
+    audioPrimingRef.current = true;
     audioRef.current.src = silentUrlRef.current;
     audioRef.current.muted = true;
     audioRef.current.loop = true;
@@ -725,6 +736,10 @@ function App() {
   }
 
   function handleNativeAudioPlay() {
+    if (audioPrimingRef.current) {
+      setIsPlaying(false);
+      return;
+    }
     setIsPlaying(true);
     if (!activeTrack?.resolvedTrack) return;
     scheduleTalkover(activeTrack);

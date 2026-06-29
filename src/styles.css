@@ -642,7 +642,7 @@ h3 {
 .liveDjText {
   margin: 0;
   color: #f6f2ea;
-  font-size: clamp(20px, 1.45vw, 28px);
+  font-size: 16px;
   line-height: 1.62;
   overflow-wrap: anywhere;
   width: min(100%, 980px);
