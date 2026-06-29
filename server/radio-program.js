@@ -10,7 +10,7 @@ import { planRadioQueue } from "./queue-planner.js";
 import { buildShowTalkPlan, buildTrackContentPack } from "./content-pack.js";
 import { getTalkVoiceProfile, scoreTalkLineQuality } from "./talk-voice.js";
 
-export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, refreshSeed = "", avoidIds = [], scriptBudgetMs = 28000, songContextBudgetMs = 1800, artistContextBudgetMs = 1500, broadcastContext = null, songContextProvider = fetchSongContext, artistContextProvider = fetchArtistContext } = {}) {
+export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, refreshSeed = "", avoidIds = [], scriptBudgetMs = 28000, songContextBudgetMs = 1800, artistContextBudgetMs = 1500, broadcastContext = null, songContextProvider = fetchSongContext, artistContextProvider = fetchArtistContext, playableResolver = resolvePlayableTrack } = {}) {
   const profile = loadProfile();
   const brief = buildProgramBrief(query);
   const resolveLimit = brief.format === "city-editorial" ? Math.min(Math.max(limit * 3, limit + 8), 18) : limit;
@@ -39,8 +39,24 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, 
       profile,
       anchors: raw.anchors || [],
       rejected,
-      usedIds
+      usedIds,
+      playableResolver
     });
+  }
+  const explicitRequestUnsatisfied = buildExplicitRequestUnsatisfied(raw.explicitRequest, queue);
+  if (explicitRequestUnsatisfied) {
+    return {
+      query,
+      brief,
+      rawCount: (raw.recommendations || []).length,
+      rejected,
+      queue: [],
+      profile: raw.profile,
+      anchors: raw.anchors,
+      broadcastContext: broadcast,
+      showTalkPlan: null,
+      explicitRequestUnsatisfied
+    };
   }
   for (const track of candidates) {
     if (usedIds.has(track.id)) continue;
@@ -61,7 +77,8 @@ export async function buildRadioProgram({ query = "", limit = 6, maxWaitMs = 0, 
       profile,
       anchors: raw.anchors || [],
       rejected,
-      usedIds
+      usedIds,
+      playableResolver
     });
   }
 
@@ -112,7 +129,7 @@ async function resolveCandidatesIntoQueue(queue, candidates, context) {
     const timeLeft = budgetMs - (Date.now() - startedAt);
     if (timeLeft < 500) break;
     const batch = candidates.slice(index, index + 4);
-    const results = await Promise.allSettled(batch.map((track) => resolveWithTimeout(track, Math.min(1800, timeLeft))));
+    const results = await Promise.allSettled(batch.map((track) => resolveWithTimeout(track, Math.min(1800, timeLeft), context.playableResolver)));
     results.forEach((result, batchIndex) => {
       const track = batch[batchIndex];
       if (queue.length >= context.limit || context.usedIds.has(track.id)) return;
@@ -128,6 +145,23 @@ async function resolveCandidatesIntoQueue(queue, candidates, context) {
       });
     });
   }
+}
+
+function buildExplicitRequestUnsatisfied(explicitRequest = {}, queue = []) {
+  const artists = Array.isArray(explicitRequest.artists) ? explicitRequest.artists.filter(Boolean) : [];
+  if (!artists.length) return null;
+  const missingArtists = artists.filter((artist) =>
+    !queue.some((track) => primaryArtist(track.artist).includes(primaryArtist(artist)))
+  );
+  if (!missingArtists.length) return null;
+  return {
+    artists: missingArtists,
+    message: `这轮没有解析到 ${missingArtists.join("、")} 的稳定可播版本。`
+  };
+}
+
+function primaryArtist(value = "") {
+  return String(value).split(/[\/,&，、]/)[0].trim().toLowerCase();
 }
 
 function hasExplicitRequestEvidence(track = {}) {
@@ -558,11 +592,11 @@ function buildTalkStages(script, track) {
   return stages;
 }
 
-async function resolveWithTimeout(track, timeoutMs) {
+async function resolveWithTimeout(track, timeoutMs, playableResolver = resolvePlayableTrack) {
   let timer;
   try {
     return await Promise.race([
-      resolveCandidate(track),
+      resolveCandidate(track, playableResolver),
       new Promise((resolve) => {
         timer = setTimeout(() => resolve(null), timeoutMs);
       })
@@ -572,8 +606,8 @@ async function resolveWithTimeout(track, timeoutMs) {
   }
 }
 
-async function resolveCandidate(track) {
-  return resolvePlayableTrack({
+async function resolveCandidate(track, playableResolver = resolvePlayableTrack) {
+  return playableResolver({
     songId: track.id,
     title: track.title,
     artist: track.artist,

@@ -764,6 +764,15 @@ function App() {
     appendDialogueMessage("user", nextQuery);
     setPromptText("");
     const fallbackIntent = /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat";
+    if (isDefiniteMusicRequest(nextQuery)) {
+      const queueAction = resolveQueueRequestAction(nextQuery, {
+        hasActiveTrack: Boolean(activeTrack)
+      });
+      await applyQueueRequest(nextQuery, {
+        mode: queueAction === "append" ? "append" : "replace"
+      });
+      return;
+    }
     const intentProbe = await fetchJson("/api/dialogue", {
       method: "POST",
       body: JSON.stringify({
@@ -810,7 +819,7 @@ function App() {
       appendAfterCurrent
     });
     const nextQueue = program?.queue || [];
-    const reply = buildProgramReadyReply(nextQueue, { mode });
+    const reply = buildProgramReadyReply(nextQueue, { mode, program });
     appendDialogueMessage("dj", reply);
     setDjLine(reply);
     if (!appendAfterCurrent && nextQueue.length) {
@@ -832,7 +841,10 @@ function App() {
     ]);
   }
 
-  function buildProgramReadyReply(queue, { mode = "replace" } = {}) {
+  function buildProgramReadyReply(queue, { mode = "replace", program = null } = {}) {
+    if (program?.explicitRequestUnsatisfied?.message) {
+      return `${program.explicitRequestUnsatisfied.message} 我不会拿别的歌冒充；你可以换个歌手或换个说法，我再找。`;
+    }
     const first = queue?.[0];
     const rest = (queue || []).slice(1, 4).map((track) => `《${track.title}》`).join("、");
     if (!first) return "我试着换了一轮，但这次没有找到稳定可播的歌。换个说法，我再接。";
@@ -842,8 +854,8 @@ function App() {
         : `好，当前这首不打断。我把《${first.title}》接到下一首。`;
     }
     return rest
-      ? `好，这次真的换进播放列表了。先播《${first.title}》，后面接 ${rest}。`
-      : `好，这次真的换进播放列表了。先播《${first.title}》。`;
+      ? `排好了。先播《${first.title}》，后面接 ${rest}。`
+      : `排好了。先播《${first.title}》。`;
   }
 
   async function handleTransportPlay() {
@@ -1224,6 +1236,15 @@ function formatDate(value) {
     month: "short",
     year: "numeric"
   }).format(new Date(value));
+}
+
+function isDefiniteMusicRequest(text = "") {
+  const clean = String(text || "").trim();
+  if (!clean) return false;
+  if (/[?？]/.test(clean) || /是不是|听不懂|为什么|怎么|干嘛|介绍|你会|你能/.test(clean)) return false;
+  if (/(想听|放|播放|播|来点|来一首|换歌|接几首|排.*歌|歌单|音乐|歌曲|歌手)/i.test(clean)) return true;
+  if (/^(?:[\u3400-\u9fffA-Za-z0-9·.'’&\-\s]{2,18})$/.test(clean)) return true;
+  return false;
 }
 
 function splitTalkPages(text, maxChars) {

@@ -41,6 +41,17 @@ test("queue generation can opt into autoplay after an explicit music request", (
   assert.match(main, /if \(options\.autoStart && !options\.appendAfterCurrent && mergedQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, mergedQueue\);\s*\}/);
 });
 
+test("definite music prompts skip stale dialogue probing before queue generation", () => {
+  const submitBody = main.match(/async function handlePromptSubmit\(event\) \{[\s\S]*?\n  \}/)?.[0] || "";
+  assert.ok(submitBody, "handlePromptSubmit body should be present");
+  assert.match(submitBody, /if \(isDefiniteMusicRequest\(nextQuery\)\) \{/);
+  assert.ok(
+    submitBody.indexOf("if (isDefiniteMusicRequest(nextQuery))") < submitBody.indexOf('fetchJson("/api/dialogue"'),
+    "definite music requests should generate a fresh queue before any dialogue reply can mention stale queue items"
+  );
+  assert.match(main, /function isDefiniteMusicRequest\(text = ""\)/);
+});
+
 test("playlist import updates taste profile without interrupting the active program", () => {
   const importBody = main.match(/async function importPlaylist\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
   assert.ok(importBody, "importPlaylist body should be present");

@@ -220,6 +220,10 @@ export function recommend({ query = "", limit = 16, refreshSeed = "", avoidIds =
 
   return {
     query,
+    explicitRequest: {
+      artists: explicitArtists,
+      intent: explicitIntent
+    },
     anchors: anchors.slice(0, 20).map((song) => ({ id: song.id, title: song.title, artist: song.artist })),
     profile: summarizeProfile(profile, graph),
     recommendations: ranked,

@@ -585,6 +585,27 @@ test("program resolves explicit artist candidates before cached unrelated tracks
   assert.match(topArtists, /李宗盛/, `expected 李宗盛 in playable program queue, got:\n${topArtists}`);
 });
 
+test("program reports unsatisfied explicit artist requests instead of substituting unrelated tracks", async () => {
+  const program = await buildRadioProgram({
+    query: "凤凰传奇",
+    limit: 4,
+    maxWaitMs: 6500,
+    scriptBudgetMs: 0,
+    songContextBudgetMs: 0,
+    artistContextBudgetMs: 0,
+    refreshSeed: "unsatisfied-explicit-artist-test",
+    playableResolver: async (track) => /凤凰传奇/.test(track.artist) ? null : {
+      title: track.title,
+      artist: track.artist,
+      streamUrl: `https://example.test/${track.id}.mp3`
+    }
+  });
+
+  assert.equal(program.queue.length, 0, program.queue.map((track) => `${track.title} - ${track.artist}`).join("\n"));
+  assert.deepEqual(program.explicitRequestUnsatisfied?.artists, ["凤凰传奇"]);
+  assert.match(program.explicitRequestUnsatisfied?.message || "", /凤凰传奇|可播/);
+});
+
 test("final program varies story framing instead of repeating the same template", async () => {
   const program = await buildRadioProgram({
     query: "下班路上，想听一点华语、松弛、但不要太丧",
