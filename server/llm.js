@@ -26,6 +26,7 @@ export async function generateDialogueReplyWithLlm({ message, query, profile, ac
     model: config.model,
     temperature: 0.72,
     response_format: { type: "json_object" },
+    ...providerPayloadOptions(config),
     messages: [
       {
         role: "system",
@@ -101,6 +102,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
     model: config.model,
     temperature: 0.82,
     response_format: { type: "json_object" },
+    ...providerPayloadOptions(config),
     messages: [
       {
         role: "system",
@@ -240,6 +242,17 @@ function makeRejectedScript(reason) {
     rejected: true,
     reason
   };
+}
+
+function providerPayloadOptions(config = {}) {
+  const model = cleanLine(config.model || "");
+  const apiBase = cleanLine(config.apiBase || "");
+  if (/deepseek/i.test(`${config.provider || ""} ${apiBase}`) && /^deepseek-v4-/i.test(model)) {
+    return {
+      thinking: { type: "disabled" }
+    };
+  }
+  return {};
 }
 
 function normalizeBriefForPrompt(brief = {}) {
