@@ -689,6 +689,68 @@ test("talk script prompt reduces repeated weather and city scene after the opene
   assert.deepEqual(userPayload.contentPack.editorial.newsBriefs, ["科技产品、AI 应用和效率工具总在提醒人快一点"]);
 });
 
+test("talk script disables DeepSeek v4 thinking mode for realtime JSON output", async () => {
+  const originalModel = process.env.DEEPSEEK_MODEL;
+  const originalLlmModel = process.env.LLM_MODEL;
+  const originalProvider = process.env.LLM_PROVIDER;
+  const originalBase = process.env.DEEPSEEK_API_BASE;
+  let capturedPayload = null;
+  process.env.DEEPSEEK_MODEL = "deepseek-v4-pro";
+  process.env.LLM_MODEL = "";
+  process.env.LLM_PROVIDER = "deepseek";
+  process.env.DEEPSEEK_API_BASE = "https://api.deepseek.com";
+  globalThis.fetch = async (_url, options) => {
+    capturedPayload = JSON.parse(options.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  opening: "《于是》和郑润泽先从北京回家路上说起。",
+                  bridges: ["这首歌把评论故事和夜晚场景放在一起。"],
+                  nextTease: "下一首继续接。",
+                  closing: ""
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  try {
+    await generateTalkScriptWithLlm({
+      track: {
+        title: "于是",
+        artist: "郑润泽",
+        evidence: [],
+        sources: []
+      },
+      context: {
+        query: "北京晚上回家路上"
+      },
+      fallbackScript: {
+        opening: "先从这首开始。",
+        bridges: ["这里慢一点。"],
+        nextTease: "后面继续顺着走。",
+        closing: ""
+      },
+      timeoutMs: 1000
+    });
+  } finally {
+    process.env.DEEPSEEK_MODEL = originalModel;
+    process.env.LLM_MODEL = originalLlmModel;
+    process.env.LLM_PROVIDER = originalProvider;
+    process.env.DEEPSEEK_API_BASE = originalBase;
+  }
+
+  assert.deepEqual(capturedPayload.thinking, { type: "disabled" });
+});
+
 test("talk script prompt passes structured editorial context for richer radio scripts", async () => {
   let capturedPayload = null;
   globalThis.fetch = async (_url, options) => {
