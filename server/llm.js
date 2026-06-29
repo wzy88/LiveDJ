@@ -109,6 +109,9 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
         content: [
           "你是 Claudio，一个像朋友一样的中文私人电台 DJ。",
           "根据当前歌曲、用户输入、用户画像和推荐依据，写真实贴合当下的口播。",
+          "如果有 talkBrief，必须把它当成电台编辑给你的写作任务：先回应用户命题，再把歌曲、热评/故事、歌手材料、天气、新闻、娱乐八卦和城市语境自然揉成一段。",
+          "talkBrief.writingTask 要优先执行。整段口播合计控制在200-300字以内，再拆成 opening、bridges、nextTease；不得只写抽象情绪，不能只说慢慢听，必须点名用户关键词和当前歌曲。",
+          "如果 talkBrief.mustMention 有内容，至少覆盖其中 3 个；如果 talkBrief.materials 有故事、歌手、城市资讯，至少使用 2 类素材。",
           "如果有 showTalkPlan 和 contentPack，必须按节目级策划写：先服务这期节目，再服务单首歌。",
           "showTalkPlan 是整期节目大纲；contentPack 是当前歌曲的素材包，包括槽位、选择理由、故事和城市资讯。",
           "showTalkPlan.voiceProfile 是本期声音人格，优先级高于普通 DJ 口吻。默认是城市音乐编辑 + 朋友低声：具体、克制、有场景，不写主持腔。",
@@ -118,6 +121,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           "opening 不要用“这里”“走到这儿”“这一首负责”“换一个速度”“把频道...”这类内部编排或抽象转场词开头。",
           "不要泛泛而谈，每首歌必须不同，必须引用歌曲、用户状态、推荐依据里的具体信息。",
           "禁用抽象电台腔：情绪路线、气口、主线、慢慢听、很稳、接住、往下走、负责把、私人时间。要换成具体歌名、歌手、场景、评论/故事或资讯点。",
+          "尤其禁止只写“今晚的情绪路线很稳”“慢慢听”“把夜晚放轻一点”这类没有信息量的句子。",
           "只能使用输入 JSON 中明确给出的信息；不要编造歌词、歌单名、用户曾经反复听过、歌曲背后的故事。",
           "songContext 是已经抓取和清洗过的网易云评论/故事语境；hotCommentThemes/storySummary 用来概括，commentExcerpts 是允许短引用的评论原文摘录。",
           "如果 songContext.commentExcerpts 有内容，可以短引用其中一句，格式类似“评论里有一句：……”，但每段最多引用一句，不要连续复读评论。",
@@ -162,6 +166,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           songContext: normalizeSongContextForPrompt(context.songContext),
           broadcastContext: normalizeBroadcastContextForPrompt(context.broadcastContext, { queueIndex: context.queueIndex || 0 }),
           brief: normalizeBriefForPrompt(context.brief),
+          talkBrief: normalizeTalkBriefForPrompt(context.talkBrief),
           showTalkPlan: normalizeShowTalkPlanForPrompt(context.showTalkPlan),
           contentPack: normalizeContentPackForPrompt(context.contentPack, { queueIndex: context.queueIndex || 0 }),
           recentLines: (context.recentLines || []).slice(-10),
@@ -276,6 +281,47 @@ function normalizeBriefForPrompt(brief = {}) {
   const contentTaste = (brief.contentTaste || []).map((item) => cleanLine(item)).filter(Boolean).slice(0, 6);
   if (!format && !city && !scene && !contentTaste.length) return null;
   return compactObject({ format, city, scene, contentTaste });
+}
+
+function normalizeTalkBriefForPrompt(talkBrief = {}) {
+  if (!talkBrief || typeof talkBrief !== "object") return null;
+  const userKeywords = compactObject({
+    artists: normalizeBriefTexts(talkBrief.userKeywords?.artists),
+    city: normalizeBriefTexts(talkBrief.userKeywords?.city),
+    scene: normalizeBriefTexts(talkBrief.userKeywords?.scene),
+    mood: normalizeBriefTexts(talkBrief.userKeywords?.mood),
+    content: normalizeBriefTexts(talkBrief.userKeywords?.content)
+  });
+  const currentTrack = compactObject({
+    title: cleanLine(talkBrief.currentTrack?.title || ""),
+    artist: cleanLine(talkBrief.currentTrack?.artist || ""),
+    materialSummary: cleanLine(talkBrief.currentTrack?.materialSummary || ""),
+    selectionReason: cleanLine(talkBrief.currentTrack?.selectionReason || ""),
+    scenes: normalizeBriefTexts(talkBrief.currentTrack?.scenes),
+    moods: normalizeBriefTexts(talkBrief.currentTrack?.moods),
+    genres: normalizeBriefTexts(talkBrief.currentTrack?.genres)
+  });
+  const nextTrack = compactObject({
+    title: cleanLine(talkBrief.nextTrack?.title || ""),
+    artist: cleanLine(talkBrief.nextTrack?.artist || ""),
+    role: cleanLine(talkBrief.nextTrack?.role || "")
+  });
+  const materials = compactObject({
+    story: cleanLine(talkBrief.materials?.story || "").slice(0, 420),
+    artist: cleanLine(talkBrief.materials?.artist || "").slice(0, 360),
+    cityEditorial: cleanLine(talkBrief.materials?.cityEditorial || "").slice(0, 420)
+  });
+  const normalized = compactObject({
+    purpose: cleanLine(talkBrief.purpose || ""),
+    userKeywords,
+    currentTrack,
+    nextTrack,
+    materials,
+    writingTask: cleanLine(talkBrief.writingTask || ""),
+    mustMention: normalizeBriefTexts(talkBrief.mustMention).slice(0, 8),
+    bannedPhrases: normalizeBriefTexts(talkBrief.bannedPhrases).slice(0, 14)
+  });
+  return Object.keys(normalized).length ? normalized : null;
 }
 
 function normalizeShowTalkPlanForPrompt(plan = {}) {
@@ -555,6 +601,9 @@ function sanitizeTalkCopy(value = "") {
     .replace(/不急着往前走/g, "先把当前这首听完整")
     .replace(/还挂在北京的夜晚里/g, "继续放在北京夜里的节目里")
     .replace(/他说，评论里那一句，?/g, "")
+    .replace(/别让同一段城市背景抢走音乐[，。；]?/g, "")
+    .replace(/这一次把北京背景收轻一点[，。；]?/g, "")
+    .replace(/这首先不再重复城市开场[，。；]?/g, "")
     .replace(/这比单纯的介绍更像一个真实入口/g, "这句评论可以把歌里的关系说得更具体")
     .replace(/这比单纯介绍《([^》]+)》更像一个真实入口/g, "这句评论可以把《$1》说得更具体")
     .replace(/主线/g, "线索")
