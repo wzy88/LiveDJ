@@ -49,6 +49,43 @@ test("broadcast context can provide Beijing editorial material for test-stage sc
   assert.doesNotMatch(context.newsBriefs.map((item) => item.text).join("\n"), /突发|刚刚|实时|独家/);
 });
 
+test("Beijing evening editorial material still uses evening commute copy", () => {
+  const context = buildBroadcastContext({
+    now: new Date("2026-06-30T21:06:00+08:00"),
+    city: "北京",
+    editorialMode: "test"
+  });
+  const joined = [
+    context.timeCue,
+    context.localSceneSummary,
+    ...(context.newsBriefs || []).map((item) => item.text),
+    ...(context.cultureBriefs || []).map((item) => item.text),
+    ...(context.editorialAngles || [])
+  ].join("\n");
+
+  assert.equal(context.timeCue, "今晚");
+  assert.match(joined, /下班|夜间消费|回家路|夜风|路灯/);
+});
+
+test("Beijing test editorial material respects morning and avoids evening commute copy", () => {
+  const context = buildBroadcastContext({
+    now: new Date("2026-06-30T10:06:00+08:00"),
+    city: "北京",
+    editorialMode: "test"
+  });
+  const joined = [
+    context.timeCue,
+    context.localSceneSummary,
+    ...(context.newsBriefs || []).map((item) => item.text),
+    ...(context.cultureBriefs || []).map((item) => item.text),
+    ...(context.editorialAngles || [])
+  ].join("\n");
+
+  assert.equal(context.timeCue, "上午");
+  assert.match(joined, /上午|会议|咖啡|外卖|工作|写字楼/);
+  assert.doesNotMatch(joined, /今晚|下班|晚高峰|夜间消费|回家路|回家那十几分钟|夜风/);
+});
+
 test("open meteo weather summary turns Beijing weather data into a usable one-line cue", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {

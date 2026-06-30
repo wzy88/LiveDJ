@@ -427,6 +427,33 @@ test("rule talk script can weave provided broadcast context without inventing it
   assert.match(joined, /今晚|外面有点潮|AI 应用更新/);
 });
 
+test("rule talk script respects morning broadcast context and removes stale evening commute copy", () => {
+  const script = buildTalkScript({
+    id: "song-morning",
+    title: "知我",
+    artist: "国风堂 / 哦漏",
+    moods: [{ value: "温柔", weight: 10 }],
+    scenes: [{ value: "通勤", weight: 8 }],
+    genres: [{ value: "流行", weight: 9 }]
+  }, {
+    query: "下班路上，想听一点华语、松弛、但不要太丧",
+    queueIndex: 0,
+    broadcastContext: {
+      timeCue: "上午",
+      city: "北京",
+      weatherSummary: "北京现在 25°C，多云",
+      localSceneSummary: "北京上午的写字楼和咖啡还在工作日的中段，会议间隙可以给歌一个具体位置。",
+      newsBriefs: [{ text: "办公效率和 AI 应用还在被讨论，落到电台里，可以说到会议间隙和耳机里的几分钟", source: "test-editorial" }],
+      cultureBriefs: [{ text: "展览和书店也会改变北京白天的路线", source: "test-editorial" }],
+      editorialAngles: ["北京上午的写字楼和咖啡", "会议间隙和耳机里的几分钟"]
+    }
+  });
+
+  const joined = [script.opening, ...(script.bridges || []), script.nextTease].filter(Boolean).join("\n");
+  assert.match(joined, /知我|国风堂|上午|会议|咖啡|25°C|多云/);
+  assert.doesNotMatch(joined, /今晚|夜里|下班路上|回家路|回家那十几分钟|通勤尾声/);
+});
+
 test("rule talk script blends song scene, story, and Beijing editorial briefs into richer copy", () => {
   const script = buildTalkScript({
     id: "song-editorial",

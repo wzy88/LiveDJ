@@ -149,32 +149,113 @@ function cleanSummary(value = "") {
 }
 
 function buildTestEditorialContext({ city, timeCue, now }) {
+  const daypart = resolveDaypart(now);
   if (city !== "北京") {
     return {
       city,
-      localSceneSummary: `${city}${timeCue || "这会儿"}的城市节奏适合放慢一点，通勤、灯光和耳机里的歌可以先把人从白天接出来。`,
-      newsBriefs: [
-        makeBrief(`${city}这几天被反复讨论的，是通勤、街区更新和夜间消费如何改变下班后的路线`),
-        makeBrief(`很多城市都在谈文旅、演出和周末消费，放进电台里，可以具体落到散场后的地铁口和回家路`)
-      ],
-      cultureBriefs: [
-        makeBrief(`演出、展览和小型现场让${city}的夜晚多了一点亮色，很多故事发生在散场、等车和回家的路上`)
-      ],
-      editorialAngles: [`${city}下班后的地铁口`, "散场后的路灯和便利店", "资讯很多但只取和歌曲有关的一点"]
+      ...buildGenericCityEditorial({ city, timeCue, daypart })
     };
   }
 
+  const timed = buildBeijingEditorialByDaypart(daypart);
   return {
     city: "北京",
     localSceneSummary: buildBeijingScene(timeCue, now),
+    newsBriefs: timed.newsBriefs.map(makeBrief),
+    cultureBriefs: timed.cultureBriefs.map(makeBrief),
+    editorialAngles: timed.editorialAngles
+  };
+}
+
+function resolveDaypart(now) {
+  const hour = getLocalHour(now);
+  if (hour >= 5 && hour < 9) return "morning";
+  if (hour >= 9 && hour < 12) return "forenoon";
+  if (hour >= 12 && hour < 14) return "noon";
+  if (hour >= 14 && hour < 18) return "afternoon";
+  if (hour >= 18 && hour < 23) return "evening";
+  return "late-night";
+}
+
+function buildGenericCityEditorial({ city, timeCue, daypart }) {
+  if (daypart === "evening" || daypart === "late-night") {
+    return {
+      localSceneSummary: `${city}${timeCue || "这会儿"}的城市节奏适合放慢一点，灯光和耳机里的歌可以先把人从白天接出来。`,
+      newsBriefs: [
+        makeBrief(`${city}这几天被反复讨论的是街区更新、演出和夜间消费，放进电台里只取和歌曲有关的一点`),
+        makeBrief(`很多城市都在谈文旅、演出和周末消费，放进电台里，可以具体落到散场后的路口`)
+      ],
+      cultureBriefs: [
+        makeBrief(`演出、展览和小型现场让${city}的夜晚多了一点亮色，很多故事发生在散场和等车的时候`)
+      ],
+      editorialAngles: [`${city}夜里的路口`, "散场后的路灯和便利店", "资讯很多但只取和歌曲有关的一点"]
+    };
+  }
+  return {
+    localSceneSummary: `${city}${timeCue || "这会儿"}的城市节奏还在工作日的中段，咖啡、消息和会议间隙可以给歌一个具体位置。`,
     newsBriefs: [
-      makeBrief("城市更新和夜间消费的话题这两天还在被讨论，落到电台里，可以说到下班后从写字楼到地铁口那段路"),
-      makeBrief("科技产品、AI 应用和效率工具总在提醒人快一点，放进歌里，可以只取一个对照：人需要几分钟不看屏幕"),
-      makeBrief("通勤、加班和周末计划经常被放在同一张时间表里，北京的日常很满，歌可以先放在回家路上那十几分钟")
+      makeBrief(`${city}这几天被反复讨论的是街区更新、办公效率和日常消费，放进电台里只取和歌曲有关的一点`),
+      makeBrief(`工作日白天的信息很多，适合把新闻压低成背景，只留给音乐一个清楚入口`)
     ],
     cultureBriefs: [
-      makeBrief("Livehouse、展览和小剧场把周中的北京抬亮一点，很多人的故事不在热搜里，而在散场后的地铁口"),
-      makeBrief("胡同口、商场外摆和深夜便利店会给歌一个具体位置：路灯、风、外卖骑手和还亮着的招牌")
+      makeBrief(`展览、书店和小型现场也会改变白天的城市路线，但这里不做资讯播报，只拿来给歌曲找画面`)
+    ],
+    editorialAngles: [`${city}上午的写字楼和街口`, "咖啡和会议间隙", "资讯很多但只取和歌曲有关的一点"]
+  };
+}
+
+function buildBeijingEditorialByDaypart(daypart) {
+  if (daypart === "morning") {
+    return {
+      newsBriefs: [
+        "早高峰、办公效率和日常消费仍然是北京工作日的底色，放进电台里只取一个对照：人需要一点不催促的声音",
+        "科技产品、AI 应用和效率工具总在提醒人快一点，放进歌里，可以只取一个对照：人需要几分钟不看屏幕",
+        "通勤和当天计划经常挤在同一张时间表里，歌可以先放在进办公室前后的几分钟"
+      ],
+      cultureBriefs: [
+        "展览、书店和小型现场也会改变北京的日常路线，上午只先把这些当作城市背景，不急着展开",
+        "咖啡店、地铁口和写字楼前的人流给歌一个具体位置：杯盖、消息提示和还没完全醒来的耳朵"
+      ],
+      editorialAngles: ["北京早高峰后的写字楼", "咖啡和会议间隙", "AI 和效率话题背后的屏幕疲劳", "上午耳机里的几分钟"]
+    };
+  }
+  if (daypart === "forenoon" || daypart === "noon") {
+    return {
+      newsBriefs: [
+        "办公效率、AI 应用和城市日常消费还在被讨论，落到电台里，可以说到会议间隙和耳机里的几分钟",
+        "北京工作日中段的信息很多，歌不用追热点，只需要把注意力从屏幕旁边带回来一点",
+        "咖啡、外卖和当天计划挤在一起，放进节目里，可以变成一段不打扰人的白天背景"
+      ],
+      cultureBriefs: [
+        "展览、书店和小型现场把北京的白天也抬亮一点，很多故事不在热搜里，而在午间和会议间隙",
+        "写字楼、咖啡店和地铁口给歌一个具体位置：屏幕、杯盖、外卖骑手和短暂空下来的耳朵"
+      ],
+      editorialAngles: ["北京上午的写字楼和咖啡", "会议间隙和耳机里的几分钟", "AI 和效率话题背后的屏幕疲劳", "白天信息流旁边的一首歌"]
+    };
+  }
+  if (daypart === "afternoon") {
+    return {
+      newsBriefs: [
+        "城市更新、办公效率和周末计划经常挤在北京下午的时间表里，歌可以先给人一个出口",
+        "科技产品、AI 应用和效率工具总在提醒人快一点，放进歌里，可以只取一个对照：人需要几分钟不看屏幕",
+        "下午的信息流很满，电台里不用追完，只需要把和歌曲有关的一点留下"
+      ],
+      cultureBriefs: [
+        "展览、Livehouse和小剧场把接近傍晚的北京抬亮一点，但这里先不写成夜晚，只当作后半天的期待",
+        "胡同口、商场外摆和写字楼玻璃会给歌一个具体位置：风、招牌和还没结束的白天"
+      ],
+      editorialAngles: ["北京下午的写字楼玻璃", "后半天的任务和耳机", "AI 和效率话题背后的屏幕疲劳", "快到傍晚但还没下班的出口"]
+    };
+  }
+  return {
+    newsBriefs: [
+      "城市更新和夜间消费的话题这两天还在被讨论，落到电台里，可以说到下班后从写字楼到地铁口那段路",
+      "科技产品、AI 应用和效率工具总在提醒人快一点，放进歌里，可以只取一个对照：人需要几分钟不看屏幕",
+      "通勤、加班和周末计划经常被放在同一张时间表里，北京的日常很满，歌可以先放在回家路上那十几分钟"
+    ],
+    cultureBriefs: [
+      "Livehouse、展览和小剧场把周中的北京抬亮一点，很多人的故事不在热搜里，而在散场后的地铁口",
+      "胡同口、商场外摆和深夜便利店会给歌一个具体位置：路灯、风、外卖骑手和还亮着的招牌"
     ],
     editorialAngles: ["北京下班后的地铁口", "散场后的路灯和便利店", "AI 和效率话题背后的屏幕疲劳", "热闹外面的一段回家路"]
   };
@@ -185,8 +266,11 @@ function buildBeijingScene(timeCue, now) {
   if (hour >= 5 && hour < 10) {
     return "北京早高峰刚把人推上地铁和环路，写字楼的灯一层层亮起来，耳机里需要一点不催人的声音。";
   }
-  if (hour >= 10 && hour < 14) {
-    return "北京中午的街面短暂松一下，咖啡、外卖和会议间隙挤在一起，适合把耳朵从工作语气里拿出来。";
+  if (hour >= 9 && hour < 12) {
+    return "北京上午的写字楼和咖啡还在工作日的中段，消息、会议和外卖提醒挤在一起，适合把耳朵从工作语气里拿出来。";
+  }
+  if (hour >= 12 && hour < 14) {
+    return "北京中午的街面短暂松一下，咖啡、外卖和午休间隙挤在一起，适合把耳朵从工作语气里拿出来。";
   }
   if (hour >= 14 && hour < 18) {
     return "北京下午的光落在写字楼玻璃和胡同墙面上，人还在处理任务，心已经开始等一个能下班的出口。";

@@ -128,6 +128,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           "如果 songContext 为空，不要提热评、评论区、网友故事、歌曲背后故事。",
           "broadcastContext 只包含已提供的播出语境；可以自然使用 timeCue、weatherSummary、newsSummary、city、localSceneSummary、newsBriefs、cultureBriefs、editorialAngles。",
           "如果 weatherSummary 或 localSceneSummary 没有出现在输入里，不要主动补天气、温度、地铁口、环路、胡同口。",
+          "必须服从 broadcastContext.timeCue：如果 timeCue 是早上、上午、中午或下午，禁止写今晚、夜里、下班路上、晚高峰、回家那十几分钟；只能写对应时段的工作间隙、午间、下午或当前场景。",
           "queueIndex 大于 0 时，优先使用当前歌曲、评论、歌手或资讯角度，不要重复第一首已经讲过的天气和北京背景。",
           "newsBriefs/cultureBriefs/editorialAngles 是资讯和城市编辑素材，可以拼进歌曲场景与听众故事里，但不要说成突发、实时、独家新闻，不要编造未给出的事实。",
           "track.publicPlaylistReferences 只给你理解风格，不要在口播里说出这些公开歌单名，也不要把它说成“你导入的”。",

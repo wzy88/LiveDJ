@@ -27,3 +27,10 @@ test("program brief keeps next-song requests as append mode", () => {
   assert.ok(brief.contentTaste.includes("stories"));
   assert.ok(brief.contentTaste.includes("gossip"));
 });
+
+test("program brief does not treat bare commute or workday copy as evening", () => {
+  const brief = buildProgramBrief("上午工作间隙，想听一点华语、清爽、但不要太吵");
+
+  assert.equal(brief.timeIntent, "morning");
+  assert.equal(brief.scene, "工作学习");
+});

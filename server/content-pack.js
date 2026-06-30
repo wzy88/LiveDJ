@@ -70,8 +70,9 @@ function buildSelectionReason(track = {}, brief = {}) {
 function buildShowThesis(brief = {}) {
   if (brief.format === "city-editorial") {
     const city = brief.city || "北京";
-    const scene = brief.scene || "回家路上";
-    return `这是一档关于${city}${scene}的城市编辑节目：用歌、评论故事和一点资讯，把地铁口、环路和下班后的几分钟串起来。`;
+    const scene = brief.scene || defaultSceneForTimeIntent(brief.timeIntent);
+    const motif = motifForTimeIntent(brief.timeIntent, city);
+    return `这是一档关于${city}${scene}的城市编辑节目：用歌、评论故事和一点资讯，把${motif}串起来。`;
   }
   return "这是一档按当前状态排歌的节目：先说清楚为什么放这首，再让歌曲自然往后接。";
 }
@@ -86,15 +87,45 @@ function buildTalkAngle(pack = {}, index) {
 
 function buildRecurringMotifs(brief = {}) {
   const city = brief.city || "北京";
-  const scene = brief.scene || "回家路上";
+  const scene = brief.scene || defaultSceneForTimeIntent(brief.timeIntent);
   if (brief.format === "city-editorial") {
-    return [
-      `${city}${scene}的地铁口和环路`,
-      "评论里的告别、遗憾或重逢",
-      "下班后几分钟的真实资讯背景"
-    ];
+    return motifsForTimeIntent(brief.timeIntent, city, scene);
   }
   return ["用户这次点名的歌手或曲风", "歌曲本身的场景和心情", "下一首如何接上当前这首"];
+}
+
+function defaultSceneForTimeIntent(timeIntent = "") {
+  if (timeIntent === "morning") return "上午工作间隙";
+  if (timeIntent === "noon") return "午间休息";
+  if (timeIntent === "afternoon") return "下午工作间隙";
+  if (timeIntent === "late-night") return "深夜放松";
+  if (timeIntent === "evening") return "晚上回家路上";
+  return "此刻";
+}
+
+function motifForTimeIntent(timeIntent = "", city = "北京") {
+  if (timeIntent === "morning") return "写字楼、咖啡和会议间隙";
+  if (timeIntent === "noon") return "午间街面、外卖和短暂空下来的耳朵";
+  if (timeIntent === "afternoon") return "下午任务、屏幕疲劳和快到傍晚的出口";
+  if (timeIntent === "late-night") return "路灯、便利店和深夜还没放下的话";
+  if (timeIntent === "evening") return "地铁口、环路和下班后的几分钟";
+  return `${city}此刻的街面、信息流和耳机里的几分钟`;
+}
+
+function motifsForTimeIntent(timeIntent = "", city = "北京", scene = "此刻") {
+  if (timeIntent === "morning") {
+    return [`${city}${scene}的写字楼和咖啡`, "评论里的告别、遗憾或重逢", "上午几分钟的真实资讯背景"];
+  }
+  if (timeIntent === "noon") {
+    return [`${city}${scene}的外卖、咖啡和街面`, "评论里的告别、遗憾或重逢", "午间几分钟的真实资讯背景"];
+  }
+  if (timeIntent === "afternoon") {
+    return [`${city}${scene}的屏幕和写字楼玻璃`, "评论里的告别、遗憾或重逢", "下午几分钟的真实资讯背景"];
+  }
+  if (timeIntent === "late-night") {
+    return [`${city}${scene}的路灯和便利店`, "评论里的告别、遗憾或重逢", "深夜几分钟的真实资讯背景"];
+  }
+  return [`${city}${scene}的地铁口和环路`, "评论里的告别、遗憾或重逢", "下班后几分钟的真实资讯背景"];
 }
 
 function buildTransitionRole({ track = {}, previousTrack = null, nextTrack = null } = {}) {

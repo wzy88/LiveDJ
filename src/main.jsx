@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { buildDefaultRadioQuery } from "./default-query.js";
 import { mergeQueueAfterCurrent, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
 import { buildProgramReadyReply } from "./program-reply.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
 const liveDjPageChars = 96;
+const initialRadioQuery = buildDefaultRadioQuery();
 
 function App() {
   const [graphStats, setGraphStats] = useState(null);
@@ -15,7 +17,7 @@ function App() {
   const [playlistText, setPlaylistText] = useState("");
   const [playlistImageDataUrl, setPlaylistImageDataUrl] = useState("");
   const [playlistImageName, setPlaylistImageName] = useState("");
-  const [query, setQuery] = useState("今晚下班路上，想听一点华语、松弛、但不要太丧");
+  const [query, setQuery] = useState(initialRadioQuery);
   const [promptText, setPromptText] = useState("");
   const [recommendations, setRecommendations] = useState([]);
   const [activeTrack, setActiveTrack] = useState(null);
