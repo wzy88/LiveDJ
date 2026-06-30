@@ -10,6 +10,21 @@ export function mergeQueueAfterCurrent(currentQueue = [], incomingQueue = [], cu
   return [...before, ...incoming];
 }
 
+export function mergeQueueAtTail(currentQueue = [], incomingQueue = []) {
+  const seen = new Set();
+  const current = currentQueue.filter((track) => {
+    if (!track?.id || seen.has(track.id)) return false;
+    seen.add(track.id);
+    return true;
+  });
+  const incoming = incomingQueue.filter((track) => {
+    if (!track?.id || seen.has(track.id)) return false;
+    seen.add(track.id);
+    return true;
+  });
+  return [...current, ...incoming];
+}
+
 export function shouldQueueAfterCurrent(text, { hasActiveTrack = false, isPlaying = false } = {}) {
   void isPlaying;
   return resolveQueueRequestAction(text, { hasActiveTrack }) === "append";

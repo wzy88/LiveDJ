@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { buildDefaultRadioQuery } from "./default-query.js";
 import { buildImportStatus, buildImportSummary } from "./import-summary.js";
-import { mergeQueueAfterCurrent, resolveQueueRequestAction } from "./queue-behavior.js";
+import { mergeQueueAfterCurrent, mergeQueueAtTail, resolveQueueRequestAction } from "./queue-behavior.js";
 import { buildProgramReadyReply } from "./program-reply.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
@@ -48,6 +48,8 @@ function App() {
   const silentUrlRef = useRef("");
   const audioPrimingRef = useRef(false);
   const programPromiseRef = useRef(null);
+  const backfillPromiseRef = useRef(null);
+  const queueMutationSeqRef = useRef(0);
   const speechSeqRef = useRef(0);
   const latestQueryRef = useRef(query);
   const activeTrackRef = useRef(activeTrack);
@@ -231,65 +233,123 @@ function App() {
 
   async function loadRecommendations(queryOverride = query, options = {}) {
     const effectiveQuery = String(queryOverride || "").trim();
-    const refreshSeed = options.refresh ? `${Date.now()}-${Math.random().toString(16).slice(2)}` : "";
-    const avoidIds = options.avoidCurrent ? queueRef.current.map((track) => track.id).filter(Boolean).slice(0, 6) : [];
-    const requestKey = JSON.stringify({ q: effectiveQuery, refreshSeed, avoidIds });
-    if (!programPromiseRef.current || programPromiseRef.current.key !== requestKey) {
-      const params = new URLSearchParams({
-        q: effectiveQuery,
-        limit: "10",
-        wait: options.refresh ? "3600" : "6500",
-        scriptWait: options.refresh ? "7000" : "18000"
-      });
-      if (refreshSeed) params.set("refresh", refreshSeed);
-      if (avoidIds.length) params.set("avoid", avoidIds.join(","));
-      const promise = fetchJson(`/api/program?${params.toString()}`).finally(() => {
-        programPromiseRef.current = null;
-      });
-      programPromiseRef.current = { key: requestKey, promise };
+    const requestQueueToken = options.appendToTail
+      ? queueMutationSeqRef.current
+      : queueMutationSeqRef.current + 1;
+    if (!options.appendToTail) {
+      queueMutationSeqRef.current = requestQueueToken;
     }
-    setStatus("正在生成可播队列...");
-    setIsLoadingQueue(true);
+    const refreshSeed = options.refresh ? `${Date.now()}-${Math.random().toString(16).slice(2)}` : "";
+    const avoidIds = options.avoidCurrent ? queueRef.current.map((track) => track.id).filter(Boolean).slice(0, 24) : [];
+    const requestKey = JSON.stringify({ q: effectiveQuery, refreshSeed, avoidIds });
+    const params = new URLSearchParams({
+      q: effectiveQuery,
+      limit: "10",
+      wait: options.refresh ? "3600" : "6500",
+      scriptWait: options.refresh ? "7000" : "18000"
+    });
+    if (refreshSeed) params.set("refresh", refreshSeed);
+    if (avoidIds.length) params.set("avoid", avoidIds.join(","));
+    const useForegroundRequestCache = !options.appendToTail;
+    let programPromise = null;
+    if (useForegroundRequestCache) {
+      if (!programPromiseRef.current || programPromiseRef.current.key !== requestKey) {
+        const promise = fetchJson(`/api/program?${params.toString()}`).finally(() => {
+          if (programPromiseRef.current?.promise === promise) {
+            programPromiseRef.current = null;
+          }
+        });
+        programPromiseRef.current = { key: requestKey, promise };
+      }
+      programPromise = programPromiseRef.current.promise;
+    } else {
+      const promise = fetchJson(`/api/program?${params.toString()}`).finally(() => {
+        if (backfillPromiseRef.current === promise) {
+          backfillPromiseRef.current = null;
+        }
+      });
+      programPromise = promise;
+    }
+    if (!options.silent) {
+      setStatus("正在生成可播队列...");
+      setIsLoadingQueue(true);
+    }
     try {
-      const result = await programPromiseRef.current.promise;
-      const nextQueue = result.queue || [];
-      const mergedQueue = options.appendAfterCurrent
-        ? mergeQueueAfterCurrent(queueRef.current, nextQueue, currentIndex)
-        : nextQueue;
+      const result = await programPromise;
+      if (requestQueueToken !== queueMutationSeqRef.current) {
+        return { ...result, visibleQueue: queueRef.current, stale: true };
+      }
+      const incomingQueue = result.queue || [];
+      const mergedQueue = options.appendToTail
+        ? mergeQueueAtTail(queueRef.current, incomingQueue)
+        : options.appendAfterCurrent
+          ? mergeQueueAfterCurrent(queueRef.current, incomingQueue, currentIndex)
+          : incomingQueue;
+      const addedQueue = options.appendToTail
+        ? mergedQueue.slice(queueRef.current.length)
+        : incomingQueue;
       setRecommendations(mergedQueue);
       queueRef.current = mergedQueue;
       const visibleProgram = { ...result, visibleQueue: mergedQueue };
       setProfile(result.profile || profile);
-      if (options.appendAfterCurrent && activeTrackRef.current) {
-        setStatus(nextQueue.length ? `已把 ${nextQueue.length} 首接到当前歌曲后面。` : "这次没有找到稳定可播的后续歌曲。");
+      if (options.appendToTail) {
+        if (addedQueue.length) {
+          prewarmScriptAudio(addedQueue);
+        }
+      } else if (options.appendAfterCurrent && activeTrackRef.current) {
+        setStatus(incomingQueue.length ? `已把 ${incomingQueue.length} 首接到当前歌曲后面。` : "这次没有找到稳定可播的后续歌曲。");
         if (options.appendDjResponse) {
           appendDialogueMessage("dj", buildProgramReadyReply(visibleProgram, { mode: "append", query: effectiveQuery }));
         }
         prewarmScriptAudio(mergedQueue);
-      } else if (nextQueue[0]) {
+      } else if (incomingQueue[0]) {
         setCurrentIndex(0);
-        setActiveTrack(nextQueue[0]);
-        setResolvedTrack(nextQueue[0].resolvedTrack || null);
-        setDjLine(nextQueue[0].script?.opening || "新的电台队列已经排好。");
+        setActiveTrack(incomingQueue[0]);
+        setResolvedTrack(incomingQueue[0].resolvedTrack || null);
+        setDjLine(incomingQueue[0].script?.opening || "新的电台队列已经排好。");
         if (options.appendDjResponse) {
           appendDialogueMessage("dj", buildProgramReadyReply(visibleProgram, { query: effectiveQuery }));
         }
-        prewarmScriptAudio(nextQueue);
+        prewarmScriptAudio(incomingQueue);
       } else {
         setActiveTrack(null);
         setResolvedTrack(null);
         setDjLine("这次没有找到稳定可播的歌。我会更保守一点，你也可以换个状态词或者导入更多歌。");
       }
-      if (!options.appendAfterCurrent) {
-        setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
+      if (!options.silent && !options.appendAfterCurrent) {
+        setStatus(incomingQueue.length ? `可播队列已生成：${incomingQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
       }
       if (options.autoStart && !options.appendAfterCurrent && mergedQueue.length) {
         await continuePlaybackFromIndex(0, mergedQueue);
       }
       return visibleProgram;
     } finally {
-      setIsLoadingQueue(false);
+      if (!options.silent) {
+        setIsLoadingQueue(false);
+      }
     }
+  }
+
+  async function maybeBackfillQueue({ reason = "playback", minimumRemaining = 3 } = {}) {
+    void reason;
+    if (backfillPromiseRef.current) return backfillPromiseRef.current;
+    const queue = queueRef.current || [];
+    if (!queue.length) return null;
+    const activeIndex = Math.max(0, queue.findIndex((track) => track.id === activeTrackRef.current?.id));
+    const remainingPlayableCount = queue
+      .slice(activeIndex + 1)
+      .filter((track) => track?.resolvedTrack?.streamUrl).length;
+    if (remainingPlayableCount > minimumRemaining) return null;
+    backfillPromiseRef.current = loadRecommendations(latestQueryRef.current || query, {
+      appendDjResponse: false,
+      appendToTail: true,
+      avoidCurrent: true,
+      refresh: true,
+      silent: true
+    }).catch(() => null).finally(() => {
+      backfillPromiseRef.current = null;
+    });
+    return backfillPromiseRef.current;
   }
 
   async function rerollQueue() {
@@ -389,6 +449,7 @@ function App() {
       }
     }
     scheduleTalkover(track);
+    void maybeBackfillQueue({ reason: "play-start" });
     await markPlayed(track.id);
   }
 
@@ -413,11 +474,20 @@ function App() {
     const queue = queueRef.current;
     if (queue[nextIndex]) {
       await continuePlaybackFromIndex(nextIndex, queue);
+      void maybeBackfillQueue({ reason: "track-ended" });
+      return;
+    }
+    const backfill = await maybeBackfillQueue({ reason: "track-ended", minimumRemaining: 0 });
+    const backfilledQueue = backfill?.visibleQueue || queueRef.current;
+    if (backfilledQueue[nextIndex]) {
+      await continuePlaybackFromIndex(nextIndex, backfilledQueue);
+      void maybeBackfillQueue({ reason: "track-ended" });
       return;
     }
     const program = await loadRecommendations();
     if (program?.queue?.length) {
       await continuePlaybackFromIndex(0, program.queue);
+      void maybeBackfillQueue({ reason: "track-ended" });
     }
   }
 
@@ -851,11 +921,20 @@ function App() {
     const queue = queueRef.current;
     if (queue[nextIndex]) {
       await playTrackAtIndex(nextIndex, queue);
+      void maybeBackfillQueue({ reason: "manual-next" });
+      return;
+    }
+    const backfill = await maybeBackfillQueue({ reason: "manual-next", minimumRemaining: 0 });
+    const backfilledQueue = backfill?.visibleQueue || queueRef.current;
+    if (backfilledQueue[nextIndex]) {
+      await playTrackAtIndex(nextIndex, backfilledQueue);
+      void maybeBackfillQueue({ reason: "manual-next" });
       return;
     }
     const program = await loadRecommendations();
     if (program?.queue?.[0]) {
       await playTrackAtIndex(0, program.queue);
+      void maybeBackfillQueue({ reason: "manual-next" });
     }
   }
 

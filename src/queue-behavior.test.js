@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { mergeQueueAfterCurrent, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
+import { mergeQueueAfterCurrent, mergeQueueAtTail, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
 
 test("mergeQueueAfterCurrent keeps the current track and appends new queue after it", () => {
   const current = [
@@ -16,6 +16,23 @@ test("mergeQueueAfterCurrent keeps the current track and appends new queue after
   const merged = mergeQueueAfterCurrent(current, incoming, 0);
 
   assert.deepEqual(merged.map((track) => track.id), ["a", "x", "y"]);
+});
+
+test("mergeQueueAtTail keeps all current tracks and dedupes incoming backfill", () => {
+  const current = [
+    { id: "a", title: "正在播" },
+    { id: "b", title: "旧下一首" }
+  ];
+  const incoming = [
+    { id: "b", title: "重复旧歌" },
+    { id: "x", title: "后台补 1" },
+    { id: "y", title: "后台补 2" },
+    { id: "x", title: "重复补歌" }
+  ];
+
+  const merged = mergeQueueAtTail(current, incoming);
+
+  assert.deepEqual(merged.map((track) => track.id), ["a", "b", "x", "y"]);
 });
 
 test("shouldQueueAfterCurrent treats next requests as queue edits, not immediate playback", () => {
