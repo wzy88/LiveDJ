@@ -110,8 +110,11 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           "你是 Claudio，一个像朋友一样的中文私人电台 DJ。",
           "根据当前歌曲、用户输入、用户画像和推荐依据，写真实贴合当下的口播。",
           "如果有 talkBrief，必须把它当成电台编辑给你的写作任务：先回应用户命题，再把歌曲、热评/故事、歌手材料、天气、新闻、娱乐八卦和城市语境自然揉成一段。",
-          "talkBrief.writingTask 要优先执行。整段口播合计控制在200-300字以内，再拆成 opening、bridges、nextTease；不得只写抽象情绪，不能只说慢慢听，必须点名用户关键词和当前歌曲。",
+          "talkBrief.writingTask 要优先执行。它的核心不是写漂亮文案，而是回答“为什么此刻放这首歌”。整段口播合计控制在200-300字以内，再拆成 opening、bridges、nextTease；不得只写抽象情绪，不能只说慢慢听，必须点名用户关键词和当前歌曲。",
+          "如果 talkBrief.programFunction 是 answer_why_this_song_now，每段必须服务一个节目功能：opening 建立用户场景和当前歌曲，bridge 用一个具体素材形成判断，nextTease 解释下一首如何接上。",
+          "输出必须包含 angle 和 usedMaterials。angle 从 user_scene、comment_story、artist_context、city_editorial、transition、song_reason 中选；usedMaterials 写你实际使用的素材类型，例如 user_scene、song_reason、current_track、comment_story、artist_context、city_editorial、next_track。",
           "如果 talkBrief.mustMention 有内容，至少覆盖其中 3 个；如果 talkBrief.materials 有故事、歌手、城市资讯，至少使用 2 类素材。",
+          "如果写完后没有同时覆盖用户诉求、当前歌曲和至少一个具体素材，要自行重写，不要交稿。",
           "如果有 showTalkPlan 和 contentPack，必须按节目级策划写：先服务这期节目，再服务单首歌。",
           "showTalkPlan 是整期节目大纲；contentPack 是当前歌曲的素材包，包括槽位、选择理由、故事和城市资讯。",
           "showTalkPlan.voiceProfile 是本期声音人格，优先级高于普通 DJ 口吻。默认是城市音乐编辑 + 朋友低声：具体、克制、有场景，不写主持腔。",
@@ -139,7 +142,7 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           "避免重复 recentLines 里出现过的表达、比喻和句式。",
           "每段要短一点，适合真的播出来：opening 45-75 字，bridge 每条 35-65 字，nextTease 35-75 字。",
           "如果有下一首歌，nextTease 要自然把当前歌尾巴接到下一首，不要像报幕。",
-          "只输出 JSON：{\"opening\":\"...\",\"bridges\":[\"...\",\"...\"],\"nextTease\":\"...\",\"closing\":\"...\"}。"
+          "只输出 JSON：{\"angle\":\"user_scene|comment_story|artist_context|city_editorial|transition|song_reason\",\"usedMaterials\":[\"user_scene\",\"song_reason\",\"current_track\"],\"opening\":\"...\",\"bridges\":[\"...\",\"...\"],\"nextTease\":\"...\",\"closing\":\"...\"}。"
         ].join("\n")
       },
       {
@@ -224,6 +227,15 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
       context.nextTrack
     ).slice(0, 150) || fallbackScript.nextTease || "";
     const closing = sanitizeTalkClaim(cleanLine(parsed.closing), sanitizerContext).slice(0, 120) || fallbackScript.closing || "";
+    const materialGate = evaluateTalkScriptMaterialUse({
+      parsed,
+      opening,
+      bridges,
+      nextTease,
+      track,
+      context
+    });
+    if (!materialGate.ok) return makeRejectedScript(`material_gate:${materialGate.reasons.join(",")}`);
     const recentLines = (context.recentLines || []).map((line) => cleanLine(line));
     if (!mentionsTrack(opening, track) && isTooSimilarToRecent(opening, recentLines)) return makeRejectedScript("opening_too_similar");
     if (!opening || bridges.length < 1) return makeRejectedScript(!opening ? "missing_opening" : "missing_bridge");
@@ -314,11 +326,20 @@ function normalizeTalkBriefForPrompt(talkBrief = {}) {
   });
   const normalized = compactObject({
     purpose: cleanLine(talkBrief.purpose || ""),
+    programFunction: cleanLine(talkBrief.programFunction || ""),
+    primaryAngle: cleanLine(talkBrief.primaryAngle || ""),
+    requiredMaterials: normalizeBriefTexts(talkBrief.requiredMaterials).slice(0, 8),
+    segmentJobs: compactObject({
+      opening: cleanLine(talkBrief.segmentJobs?.opening || ""),
+      bridge: cleanLine(talkBrief.segmentJobs?.bridge || ""),
+      nextTease: cleanLine(talkBrief.segmentJobs?.nextTease || "")
+    }),
     userKeywords,
     currentTrack,
     nextTrack,
     materials,
     writingTask: cleanLine(talkBrief.writingTask || ""),
+    qualityGate: normalizeBriefTexts(talkBrief.qualityGate).slice(0, 8),
     mustMention: normalizeBriefTexts(talkBrief.mustMention).slice(0, 8),
     bannedPhrases: normalizeBriefTexts(talkBrief.bannedPhrases).slice(0, 14)
   });
@@ -461,6 +482,77 @@ function compactObject(value = {}) {
 
 function hasUsableSongContext(songContext = {}) {
   return Boolean(cleanLine(songContext?.storySummary || "") || songContext?.hotCommentThemes?.some((line) => cleanLine(line)));
+}
+
+function evaluateTalkScriptMaterialUse({ parsed = {}, opening = "", bridges = [], nextTease = "", track = {}, context = {} } = {}) {
+  const talkBrief = context.talkBrief || {};
+  if (talkBrief.programFunction !== "answer_why_this_song_now") return { ok: true, reasons: [] };
+  const joined = cleanLine([opening, ...(bridges || []), nextTease].filter(Boolean).join(" "));
+  const reasons = [];
+  const usedMaterials = normalizeMaterialTags(parsed.usedMaterials);
+  const hasCurrentTrack = mentionsTrack(joined, track);
+  const hasUserNeed = mentionsAnyBriefKeyword(joined, talkBrief.userKeywords);
+  const hasConcreteMaterial = mentionsConcreteBriefMaterial(joined, talkBrief, context);
+  const explainsWhy = hasWhyThisSongSignal(joined, talkBrief);
+  if (!hasCurrentTrack) reasons.push("missing_current_track");
+  if (!hasUserNeed) reasons.push("missing_user_need");
+  if (!hasConcreteMaterial) reasons.push("missing_concrete_material");
+  if (!explainsWhy) reasons.push("missing_song_reason");
+  if (!usedMaterials.length) reasons.push("missing_used_materials");
+  return { ok: reasons.length === 0, reasons };
+}
+
+function normalizeMaterialTags(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => cleanLine(item).toLowerCase().replace(/[-\s]+/g, "_"))
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function mentionsAnyBriefKeyword(text = "", userKeywords = {}) {
+  const clean = cleanLine(text);
+  const keywords = [
+    ...(userKeywords.artists || []),
+    ...(userKeywords.city || []),
+    ...(userKeywords.scene || []),
+    ...(userKeywords.mood || []),
+    ...(userKeywords.content || [])
+  ].map((item) => cleanLine(item)).filter(Boolean);
+  return keywords.some((keyword) => clean.includes(keyword));
+}
+
+function mentionsConcreteBriefMaterial(text = "", talkBrief = {}, context = {}) {
+  const clean = cleanLine(text);
+  const materials = talkBrief.materials || {};
+  const materialSeeds = [
+    ...extractMaterialSeeds(materials.story),
+    ...extractMaterialSeeds(materials.artist),
+    ...extractMaterialSeeds(materials.cityEditorial),
+    ...extractMaterialSeeds(talkBrief.currentTrack?.selectionReason),
+    ...extractMaterialSeeds(context.songContext?.storySummary),
+    ...((context.songContext?.commentExcerpts || []).flatMap((item) => extractMaterialSeeds(typeof item === "string" ? item : item?.text || ""))),
+    ...extractMaterialSeeds(context.broadcastContext?.weatherSummary),
+    ...normalizeBriefTexts(context.broadcastContext?.newsBriefs),
+    ...normalizeBriefTexts(context.broadcastContext?.cultureBriefs),
+    ...((context.broadcastContext?.editorialAngles || []).flatMap(extractMaterialSeeds))
+  ];
+  const uniqueSeeds = [...new Set(materialSeeds.map((item) => cleanLine(item)).filter((item) => item.length >= 2))];
+  return uniqueSeeds.some((seed) => clean.includes(seed));
+}
+
+function extractMaterialSeeds(value = "") {
+  const clean = cleanLine(value);
+  if (!clean) return [];
+  return (clean.match(/[\u4e00-\u9fff]{2,8}|[A-Za-z0-9]{3,}/g) || [])
+    .filter((item) => !/这首歌|评论里|有一句|新闻|资讯|编辑角度|热评主题|用户|需要|当前/.test(item))
+    .slice(0, 18);
+}
+
+function hasWhyThisSongSignal(text = "", talkBrief = {}) {
+  const clean = cleanLine(text);
+  const selectionReason = cleanLine(talkBrief.currentTrack?.selectionReason || "");
+  if (selectionReason && extractMaterialSeeds(selectionReason).some((seed) => clean.includes(seed))) return true;
+  return /所以|因为|适合|先放|先听|用来|能把|可以把|正好|放在这里|接到/.test(clean);
 }
 
 function ensureTrackAnchor(line, track = {}) {

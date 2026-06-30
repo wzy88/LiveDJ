@@ -10,6 +10,7 @@ export function buildTalkBrief({
   const userKeywords = buildUserKeywords({ query, brief, track, contentPack, broadcastContext });
   const currentTrack = buildCurrentTrackBrief(track, contentPack);
   const materials = buildMaterials({ contentPack, broadcastContext });
+  const primaryAngle = pickPrimaryAngle({ userKeywords, materials, contentPack, queueIndex });
   const mustMention = uniqueClean([
     ...userKeywords.artists,
     ...userKeywords.city,
@@ -36,6 +37,14 @@ export function buildTalkBrief({
 
   return compactObject({
     purpose: queueIndex <= 0 ? "节目开场口播" : "节目中段串联口播",
+    programFunction: "answer_why_this_song_now",
+    primaryAngle,
+    requiredMaterials: ["user_scene", "song_reason", "current_track", "concrete_material"],
+    segmentJobs: {
+      opening: "用用户场景或当前时间地点开口，并立刻点出歌名或歌手。",
+      bridge: "使用一个具体素材做节目判断：说明这首歌为什么适合此刻，而不是复述资料。",
+      nextTease: "如果有下一首，解释它和当前歌曲如何接上，不能只报歌名。"
+    },
     userKeywords,
     currentTrack,
     nextTrack: nextTrack ? compactObject({
@@ -44,10 +53,25 @@ export function buildTalkBrief({
       role: "用于自然预告下一首，不能像报幕"
     }) : null,
     materials,
-    writingTask: "写一段200-300字以内的中文电台口播，必须融合用户命题、当前歌曲、可用热评/故事、歌手信息、天气/新闻/娱乐八卦等素材；不要空泛，不要主持腔，不要编造输入里没有的事实。",
+    writingTask: "写一段200-300字以内的中文电台口播，核心任务是回答“为什么此刻放这首歌”。必须融合用户命题、当前歌曲、可用热评/故事、歌手信息、天气/新闻/娱乐八卦等素材；不要空泛，不要主持腔，不要编造输入里没有的事实。",
+    qualityGate: [
+      "必须回答为什么此刻放这首歌",
+      "必须同时覆盖用户诉求、当前歌曲和至少一个具体素材",
+      "只提到素材但没有形成节目判断视为失败",
+      "不满足以上条件必须拒稿重写"
+    ],
     mustMention,
     bannedPhrases
   });
+}
+
+function pickPrimaryAngle({ userKeywords = {}, materials = {}, contentPack = {}, queueIndex = 0 } = {}) {
+  if (queueIndex <= 0 && (userKeywords.scene?.length || userKeywords.mood?.length)) return "user_scene";
+  if (materials.story) return "comment_story";
+  if (materials.artist) return "artist_context";
+  if (materials.cityEditorial) return "city_editorial";
+  if (contentPack.transitionRole) return "transition";
+  return "song_reason";
 }
 
 function buildUserKeywords({ query = "", brief = {}, track = {}, contentPack = {}, broadcastContext = {} } = {}) {

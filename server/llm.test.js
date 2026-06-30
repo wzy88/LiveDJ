@@ -1064,3 +1064,92 @@ test("talk script prompt passes show talk plan and content pack for city-editori
   assert.match(systemPrompt, /showTalkPlan|contentPack|节目/);
   assert.match(systemPrompt, /voiceProfile|城市音乐编辑|朋友低声/);
 });
+
+test("talk script rejects LLM copy that does not use user need and supplied material", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["current_track"],
+                opening: "《最炫民族风》和凤凰传奇先放在这里，熟悉的旋律会让这一段变得热闹一点。",
+                bridges: [
+                  "这首歌不用解释太多，大家都知道它能把气氛带起来。",
+                  "后面继续顺着这个感觉走。"
+                ],
+                nextTease: "下一首接到《自由飞翔》，节奏会自然往前走。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "最炫民族风",
+      artist: "凤凰传奇",
+      scenes: [{ value: "开车" }],
+      moods: [{ value: "提神" }],
+      evidence: ["这次点名想听：凤凰传奇"]
+    },
+    context: {
+      query: "凤凰传奇，开车，北京，犯困。口播里可以带天气新闻娱乐八卦、轻松陪伴、评论热评和创作背景。",
+      nextTrack: {
+        title: "自由飞翔",
+        artist: "凤凰传奇"
+      },
+      talkBrief: {
+        programFunction: "answer_why_this_song_now",
+        primaryAngle: "user_scene",
+        requiredMaterials: ["user_scene", "song_reason", "current_track", "concrete_material"],
+        userKeywords: {
+          artists: ["凤凰传奇"],
+          city: ["北京"],
+          scene: ["开车"],
+          mood: ["犯困", "提神"],
+          content: ["热评", "新闻"]
+        },
+        currentTrack: {
+          title: "最炫民族风",
+          artist: "凤凰传奇",
+          selectionReason: "用户点名凤凰传奇，并且需要开车犯困时提神"
+        },
+        materials: {
+          story: "评论里有一句：一听这个前奏，方向盘都想跟着打拍子。",
+          cityEditorial: "北京今晚少云，风不大。新闻/资讯：城市夜生活和演出消费还在被讨论。"
+        },
+        mustMention: ["凤凰传奇", "北京", "开车", "犯困", "最炫民族风"],
+        qualityGate: [
+          "必须回答为什么此刻放这首歌",
+          "必须使用用户诉求、当前歌曲和至少一个具体素材，否则拒稿"
+        ]
+      },
+      songContext: {
+        provider: "test",
+        commentExcerpts: [{ text: "一听这个前奏，方向盘都想跟着打拍子。", theme: "开车/提神" }],
+        storySummary: "评论里常见的是开车提神和国民旋律带来的集体记忆。"
+      },
+      broadcastContext: {
+        city: "北京",
+        timeCue: "今晚",
+        weatherSummary: "北京今晚少云，风不大。",
+        newsBriefs: ["城市夜生活和演出消费还在被讨论。"]
+      }
+    },
+    fallbackScript: {
+      opening: "《最炫民族风》先放在这里。",
+      bridges: ["先把开车犯困这件事说清楚。"],
+      nextTease: "后面接到《自由飞翔》。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /material_gate/);
+});

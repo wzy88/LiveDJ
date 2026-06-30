@@ -54,6 +54,8 @@ test("program gives the first talk script enough time for LLM to replace rules",
           {
             message: {
               content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "song_reason", "current_track", "city_editorial"],
                 opening: "北京晚高峰还挂在环路上，《旅行的意义》和陈绮贞先把这段回家路放慢一点。",
                 bridges: [
                   "评论里有一句关于北京西站和行李箱的短故事，放在这首民谣旁边，比空泛情绪更能落地。",
@@ -132,9 +134,11 @@ test("program can give the first three talk scripts enough time for LLM when bud
           {
             message: {
               content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "song_reason", "current_track", "city_editorial"],
                 opening: `${variant.place}先出现，《${title}》和${artist}从这里切入，模型写稿。`,
                 bridges: [
-                  `${variant.story}进入《${title}》的口播，不再用本地模板。`,
+                  `${variant.story}进入《${title}》的口播，回应北京回家路上想听热评故事这件事。`,
                   `${artist}这一段把${variant.scene}和歌手信息接起来。`
                 ],
                 nextTease: `《${title}》自然接到后面，不报幕。`,
@@ -184,6 +188,8 @@ test("final program rewrites repeated LLM city-background openings across the sa
           {
             message: {
               content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "song_reason", "current_track", "city_editorial"],
                 opening: `《${title}》是${artist}唱的，今晚北京的通勤尾声还挂在地铁和环路上，写字楼的灯慢慢暗下去，这首歌适合放在回家路上那十几分钟。`,
                 bridges: [
                   `《${title}》这一段把重点放回歌手和歌曲本身，不再复读前一首。`,
@@ -218,6 +224,64 @@ test("final program rewrites repeated LLM city-background openings across the sa
     for (const track of program.queue.slice(0, 3)) {
       assert.match(track.script?.opening || "", new RegExp(`${escapeRegExp(track.title)}|${escapeRegExp(String(track.artist).split("/")[0].trim())}`));
     }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("program keeps rule script when LLM copy ignores the supplied scene and materials", async () => {
+  const originalFetch = globalThis.fetch;
+  let llmCalls = 0;
+  globalThis.fetch = async (url) => {
+    if (!String(url).includes("/chat/completions")) {
+      return originalFetch(url);
+    }
+    llmCalls += 1;
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "song_reason",
+                usedMaterials: ["current_track"],
+                opening: "《最炫民族风》和凤凰传奇先放在这里，熟悉的旋律会让这一段变得热闹一点。",
+                bridges: [
+                  "这首歌不用解释太多，大家都知道它能把气氛带起来。",
+                  "后面继续顺着这个感觉走。"
+                ],
+                nextTease: "下一首自然接上。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      })
+    };
+  };
+
+  try {
+    const program = await buildRadioProgram({
+      query: "凤凰传奇，开车，北京，犯困。口播里可以带天气新闻娱乐八卦、轻松陪伴、评论热评和创作背景。",
+      limit: 2,
+      maxWaitMs: 6500,
+      scriptBudgetMs: 7000,
+      songContextProvider: () => ({
+        provider: "test",
+        commentExcerpts: [{ text: "一听这个前奏，方向盘都想跟着打拍子。", theme: "开车/提神" }],
+        storySummary: "评论里常见的是开车提神和国民旋律带来的集体记忆。"
+      }),
+      artistContextBudgetMs: 0,
+      refreshSeed: "reject-weak-llm-talk-test"
+    });
+
+    assert.ok(llmCalls >= 1);
+    assert.equal(program.queue[0].scriptSource, "rules");
+    assert.equal(program.queue[0].scriptLlmStatus.ok, false);
+    assert.match(program.queue[0].scriptLlmStatus.reason, /material_gate/);
+    const joined = program.queue[0].script.lines.join("\n");
+    assert.match(joined, /凤凰传奇|开车|犯困|提神|评论|北京/);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -65,4 +65,11 @@ test("talk brief turns user prompt, song material, and Beijing context into an e
   assert.match(brief.materials.cityEditorial, /北京|少云|夜间消费|开车犯困/);
   assert.match(brief.writingTask, /200-300字以内|用户命题|热评|资讯|不要空泛/);
   assert.match(brief.mustMention.join(" "), /凤凰传奇|北京|开车|犯困|最炫民族风/);
+  assert.equal(brief.programFunction, "answer_why_this_song_now");
+  assert.equal(brief.primaryAngle, "user_scene");
+  assert.deepEqual(brief.requiredMaterials.slice(0, 4), ["user_scene", "song_reason", "current_track", "concrete_material"]);
+  assert.match(brief.segmentJobs.opening, /场景|歌名|歌手/);
+  assert.match(brief.segmentJobs.bridge, /素材|判断/);
+  assert.match(brief.segmentJobs.nextTease, /下一首|接/);
+  assert.match(brief.qualityGate.join(" "), /用户诉求|当前歌曲|素材|拒稿/);
 });
