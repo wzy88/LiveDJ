@@ -31,12 +31,7 @@ function App() {
   const [isLoadingQueue, setIsLoadingQueue] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
-  const [isLlmPanelOpen, setIsLlmPanelOpen] = useState(false);
-  const [isSavingLlm, setIsSavingLlm] = useState(false);
   const [llmStatus, setLlmStatus] = useState(null);
-  const [llmApiKey, setLlmApiKey] = useState("");
-  const [llmModel, setLlmModel] = useState("deepseek-chat");
-  const [llmApiBase, setLlmApiBase] = useState("https://api.deepseek.com");
   const [musicVolume, setMusicVolume] = useState(0.88);
   const [djLine, setDjLine] = useState("把你的想法丢给我，我来接歌。");
   const [djPageIndex, setDjPageIndex] = useState(0);
@@ -187,30 +182,6 @@ function App() {
     if (importMode === "text" && !playlistText.trim()) return "请先粘贴歌单文字，每行像“歌名 - 歌手”。";
     if (importMode === "link" && !playlistUrl.trim()) return "请先粘贴歌单链接。";
     return "";
-  }
-
-  async function saveLlmConfig() {
-    setIsSavingLlm(true);
-    setStatus("正在保存 DeepSeek 配置...");
-    try {
-      const result = await fetchJson("/api/llm/config", {
-        method: "POST",
-        body: JSON.stringify({
-          apiKey: llmApiKey,
-          model: llmModel,
-          apiBase: llmApiBase
-        })
-      });
-      setLlmStatus(result.llm);
-      setLlmApiKey("");
-      setIsLlmPanelOpen(false);
-      setStatus(result.llm?.configured ? `DeepSeek 已连接：${result.llm.model}` : "DeepSeek 配置未生效。");
-      appendDialogueMessage("dj", "DeepSeek 已经接上了。之后我的闲聊和口播会优先走模型，不再靠本地模板硬撑。");
-    } catch (error) {
-      setStatus(`DeepSeek 保存失败：${error.message}`);
-    } finally {
-      setIsSavingLlm(false);
-    }
   }
 
   async function importPlaylistLink() {
@@ -926,9 +897,6 @@ function App() {
               <button type="button" className="importEntryButton" onClick={() => setIsImportPanelOpen(true)}>
                 导入歌单
               </button>
-              <button type="button" className="adminEntryButton" onClick={() => setIsLlmPanelOpen(true)}>
-                后台
-              </button>
             </div>
           </header>
 
@@ -1157,50 +1125,6 @@ function App() {
         </div>
       ) : null}
 
-      {isLlmPanelOpen ? (
-        <div className="modalOverlay" role="dialog" aria-modal="true" aria-labelledby="llm-config-title">
-          <div className="playlistModal llmModal">
-            <div className="modalHead">
-              <div>
-                <p className="label">Dialogue Engine</p>
-                <h2 id="llm-config-title">连接 DeepSeek</h2>
-              </div>
-              <button type="button" className="iconButton" onClick={() => setIsLlmPanelOpen(false)} aria-label="关闭 DeepSeek 配置">
-                ×
-              </button>
-            </div>
-            <div className="llmCurrentState">
-              <span>{llmStatus?.configured ? "已连接" : "未连接"}</span>
-              <strong>{llmStatus?.configured ? `${llmStatus.provider} / ${llmStatus.model}` : "当前正在用本地规则兜底"}</strong>
-            </div>
-            <label className="importField">
-              <span>DeepSeek API Key</span>
-              <input
-                value={llmApiKey}
-                onChange={(event) => setLlmApiKey(event.target.value)}
-                placeholder="sk-..."
-                type="password"
-                autoComplete="off"
-              />
-            </label>
-            <label className="importField">
-              <span>模型</span>
-              <input value={llmModel} onChange={(event) => setLlmModel(event.target.value)} placeholder="deepseek-chat" />
-            </label>
-            <label className="importField">
-              <span>API Base</span>
-              <input value={llmApiBase} onChange={(event) => setLlmApiBase(event.target.value)} placeholder="https://api.deepseek.com" />
-            </label>
-            <div className="modalActions">
-              <button type="button" onClick={() => setIsLlmPanelOpen(false)}>取消</button>
-              <button type="button" className="primaryAction" onClick={saveLlmConfig} disabled={isSavingLlm}>
-                {isSavingLlm ? "保存中" : "保存并启用"}
-              </button>
-            </div>
-            <p className="configHint">Key 会写入本机 `.env.local`，不会进入 git。</p>
-          </div>
-        </div>
-      ) : null}
     </main>
   );
 }

@@ -13,14 +13,19 @@ test("prompt input shows the example as placeholder instead of prefilled text", 
   assert.doesNotMatch(main, /今晚下班路上，想听一点华语、松弛、但不要太丧/);
 });
 
-test("header keeps backend controls out of the primary user surface", () => {
+test("header keeps backend controls out of the user surface", () => {
   const topActionsBlock = main.match(/<div className="topActions">[\s\S]*?<\/div>/)?.[0] || "";
   assert.ok(topActionsBlock, "top action block should be present");
   assert.doesNotMatch(topActionsBlock, /DeepSeek ·/);
   assert.doesNotMatch(topActionsBlock, /连接 DeepSeek/);
   assert.doesNotMatch(topActionsBlock, /className="tuneButton"/);
-  assert.match(topActionsBlock, /className="adminEntryButton"/);
-  assert.match(topActionsBlock, />\s*后台\s*<\/button>/);
+  assert.doesNotMatch(topActionsBlock, /className="adminEntryButton"/);
+  assert.doesNotMatch(topActionsBlock, />\s*后台\s*<\/button>/);
+  assert.match(topActionsBlock, />\s*导入歌单\s*<\/button>/);
+  assert.doesNotMatch(main, /isLlmPanelOpen/);
+  assert.doesNotMatch(main, /saveLlmConfig/);
+  assert.doesNotMatch(main, /llm-config-title/);
+  assert.doesNotMatch(main, /DeepSeek API Key/);
 });
 
 test("desktop now playing copy top and transport bottom align to the cover", () => {

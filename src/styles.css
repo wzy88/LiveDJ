@@ -232,40 +232,6 @@ h3 {
   box-shadow: 0 16px 40px rgba(74, 224, 182, 0.2), 0 1px 0 rgba(255, 255, 255, 0.38) inset;
 }
 
-.adminEntryButton {
-  min-height: 34px;
-  padding: 0 14px;
-  border-radius: 11px;
-  background: rgba(255, 255, 255, 0.055);
-  color: rgba(244, 240, 232, 0.58);
-  font-size: 12px;
-  font-weight: 700;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.adminEntryButton:hover {
-  color: rgba(244, 240, 232, 0.84);
-  background: rgba(255, 255, 255, 0.085);
-}
-
-.llmStatusButton {
-  min-height: 38px;
-  padding: 0 18px;
-  border-radius: 13px;
-  background: rgba(3, 12, 13, 0.72);
-  color: rgba(244, 241, 234, 0.82);
-  font-size: 12px;
-  font-weight: 800;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.llmStatusButton.connected {
-  background: rgba(5, 20, 22, 0.72);
-  color: #8cf5d6;
-  border-color: rgba(126, 231, 199, 0.28);
-  box-shadow: 0 0 34px rgba(95, 232, 194, 0.08);
-}
-
 .tuneButton {
   width: 38px;
   min-height: 38px;
@@ -1349,37 +1315,6 @@ h3 {
   line-height: 1.6;
   color: rgba(244, 241, 234, 0.68);
   margin: 14px 0 0;
-}
-
-.llmModal {
-  width: min(560px, 100%);
-}
-
-.llmCurrentState {
-  display: grid;
-  gap: 5px;
-  margin: 16px 0;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: rgba(126, 231, 199, 0.08);
-  border: 1px solid rgba(126, 231, 199, 0.16);
-}
-
-.llmCurrentState span {
-  color: rgba(126, 231, 199, 0.74);
-  font-size: 12px;
-}
-
-.llmCurrentState strong {
-  color: #f6f2ea;
-  font-size: 14px;
-}
-
-.configHint {
-  margin: 12px 0 0;
-  color: rgba(244, 241, 234, 0.5);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 @keyframes tuneSweep {
