@@ -45,6 +45,7 @@ function App() {
   const voiceUrlRef = useRef("");
   const queueRef = useRef([]);
   const talkTimersRef = useRef([]);
+  const speechAudioCacheRef = useRef(new Map());
   const silentUrlRef = useRef("");
   const audioPrimingRef = useRef(false);
   const programPromiseRef = useRef(null);
@@ -629,28 +630,12 @@ function App() {
     if (typeof window === "undefined" || !text) return;
     const token = ++speechSeqRef.current;
     const nextSegment = segment ? { ...segment, text } : { id: `manual-${token}`, type: "manual", label: "口播", text, musicVolume: 0.22 };
-    setCurrentTalkSegment(nextSegment);
     setDjLine(text);
-    setStatus("正在准备口播...");
     try {
       if (voiceRef.current) {
         voiceRef.current.pause();
       }
-      const response = await fetch(`${apiBase}/api/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text,
-          voice: "zh-CN-XiaoxiaoNeural",
-          rate: "-10%",
-          pitch: "+6Hz",
-          volume: "+0%"
-        })
-      });
-      if (!response.ok) {
-        throw new Error(await response.text());
-      }
-      const blob = await response.blob();
+      const blob = await prepareSpeechAudio(text);
       if (token !== speechSeqRef.current) return;
       const url = URL.createObjectURL(blob);
       if (voiceUrlRef.current) {
@@ -663,6 +648,7 @@ function App() {
       voiceAudio.volume = 1;
       voiceAudio.onplaying = () => {
         if (token !== speechSeqRef.current) return;
+        setCurrentTalkSegment(nextSegment);
         setIsNarrating(true);
         setStatus(`${nextSegment.label || "口播"}中...`);
       };
@@ -727,23 +713,41 @@ function App() {
     window.speechSynthesis.speak(utterance);
   }
 
+  async function prepareSpeechAudio(text) {
+    const clean = String(text || "").trim();
+    if (!clean) throw new Error("口播文本为空");
+    const cached = speechAudioCacheRef.current.get(clean);
+    if (cached) return cached;
+    const promise = fetch(`${apiBase}/api/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: clean,
+        voice: "zh-CN-XiaoxiaoNeural",
+        rate: "-10%",
+        pitch: "+6Hz",
+        volume: "+0%"
+      })
+    }).then(async (response) => {
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      return response.blob();
+    }).catch((error) => {
+      speechAudioCacheRef.current.delete(clean);
+      throw error;
+    });
+    speechAudioCacheRef.current.set(clean, promise);
+    return promise;
+  }
+
   function prewarmScriptAudio(queue) {
     const lines = queue
       .slice(0, 2)
       .flatMap((track) => (track.script?.stages || [{ text: track.script?.opening }]).map((stage) => stage.text))
       .filter(Boolean);
     for (const line of lines.slice(0, 5)) {
-      fetch(`${apiBase}/api/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: line,
-          voice: "zh-CN-XiaoxiaoNeural",
-          rate: "-10%",
-          pitch: "+6Hz",
-          volume: "+0%"
-        })
-      }).catch(() => {});
+      prepareSpeechAudio(line).catch(() => {});
     }
   }
 

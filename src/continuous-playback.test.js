@@ -33,6 +33,15 @@ test("continuous playback prepares the media element before calling play", () =>
   assert.match(main, /await playMusicAudio\(audio, \{\s*allowMutedAutoplayRetry: Boolean\(options\.allowMutedAutoplayRetry\)\s*\}\);/);
 });
 
+test("talkover audio is prepared in the background without blocking music playback state", () => {
+  assert.match(main, /const speechAudioCacheRef = useRef\(new Map\(\)\);/);
+  assert.match(main, /function prepareSpeechAudio\(text\)/);
+  assert.match(main, /const blob = await prepareSpeechAudio\(text\);/);
+  assert.match(main, /voiceAudio\.onplaying = \(\) => \{\s*if \(token !== speechSeqRef\.current\) return;\s*setCurrentTalkSegment\(nextSegment\);/);
+  assert.match(main, /prepareSpeechAudio\(line\)\.catch\(\(\) => \{\}\);/);
+  assert.doesNotMatch(main, /正在准备口播/);
+});
+
 test("music prompt does not prime audio before queue action is resolved", () => {
   const submitBody = main.match(/async function handlePromptSubmit\(event\) \{[\s\S]*?\n  \}/)?.[0] || "";
   assert.ok(submitBody, "handlePromptSubmit body should be present");
