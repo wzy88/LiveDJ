@@ -268,11 +268,12 @@ function App() {
         : nextQueue;
       setRecommendations(mergedQueue);
       queueRef.current = mergedQueue;
+      const visibleProgram = { ...result, visibleQueue: mergedQueue };
       setProfile(result.profile || profile);
       if (options.appendAfterCurrent && activeTrackRef.current) {
         setStatus(nextQueue.length ? `已把 ${nextQueue.length} 首接到当前歌曲后面。` : "这次没有找到稳定可播的后续歌曲。");
         if (options.appendDjResponse) {
-          appendDialogueMessage("dj", buildProgramReadyReply(result, { mode: "append", query: effectiveQuery }));
+          appendDialogueMessage("dj", buildProgramReadyReply(visibleProgram, { mode: "append", query: effectiveQuery }));
         }
         prewarmScriptAudio(mergedQueue);
       } else if (nextQueue[0]) {
@@ -281,7 +282,7 @@ function App() {
         setResolvedTrack(nextQueue[0].resolvedTrack || null);
         setDjLine(nextQueue[0].script?.opening || "新的电台队列已经排好。");
         if (options.appendDjResponse) {
-          appendDialogueMessage("dj", buildProgramReadyReply(result, { query: effectiveQuery }));
+          appendDialogueMessage("dj", buildProgramReadyReply(visibleProgram, { query: effectiveQuery }));
         }
         prewarmScriptAudio(nextQueue);
       } else {
@@ -292,7 +293,7 @@ function App() {
       if (!options.appendAfterCurrent) {
         setStatus(nextQueue.length ? `可播队列已生成：${nextQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
       }
-      return result;
+      return visibleProgram;
     } finally {
       setIsLoadingQueue(false);
     }
@@ -799,7 +800,7 @@ function App() {
       avoidCurrent: true,
       appendAfterCurrent
     });
-    const nextQueue = program?.queue || [];
+    const nextQueue = program?.visibleQueue || program?.queue || [];
     const reply = buildProgramReadyReply(program, { mode, query: nextQuery });
     appendDialogueMessage("dj", reply);
     setDjLine(reply);
