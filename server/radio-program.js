@@ -318,7 +318,7 @@ function attachProgramFlow(queue, context) {
       ...context,
       queueIndex: index,
       stockPhraseCounts
-    }));
+    }), context);
     const stages = buildTalkStages(dedupedScript, track);
     usedLines.push(...stages.map((stage) => stage.text).filter(Boolean));
 
@@ -330,14 +330,50 @@ function attachProgramFlow(queue, context) {
   });
 }
 
-function sanitizeFinalTalkScript(script = {}) {
+function sanitizeFinalTalkScript(script = {}, context = {}) {
   return {
     ...script,
-    opening: sanitizeTalkCopy(script.opening || ""),
-    bridges: (script.bridges || []).map((line) => sanitizeTalkCopy(line)).filter(Boolean),
-    nextTease: sanitizeTalkCopy(script.nextTease || ""),
-    closing: sanitizeTalkCopy(script.closing || "")
+    opening: sanitizeTimeConsistentTalkCopy(sanitizeTalkCopy(script.opening || ""), context),
+    bridges: (script.bridges || []).map((line) => sanitizeTimeConsistentTalkCopy(sanitizeTalkCopy(line), context)).filter(Boolean),
+    nextTease: sanitizeTimeConsistentTalkCopy(sanitizeTalkCopy(script.nextTease || ""), context),
+    closing: sanitizeTimeConsistentTalkCopy(sanitizeTalkCopy(script.closing || ""), context)
   };
+}
+
+function sanitizeTimeConsistentTalkCopy(line = "", context = {}) {
+  const timeCue = cleanText(context.broadcastContext?.timeCue || "");
+  if (!/早上|上午|中午|下午/.test(timeCue)) return line;
+  const scene = timeCue.includes("中午")
+    ? "午间休息"
+    : timeCue.includes("下午")
+      ? "下午工作间隙"
+      : "上午工作间隙";
+  return tidyPunctuation(cleanText(line)
+    .replace(/放回北京今晚的背景里/g, `放回北京${timeCue}的背景里`)
+    .replace(/落在今晚的北京/g, `落在${timeCue}的北京`)
+    .replace(/把今晚说成一个结论/g, `把${timeCue}说成一个结论`)
+    .replace(/北京夜里的节目/g, `北京${timeCue}的节目`)
+    .replace(/夜间消费/g, "日常消费")
+    .replace(/今晚下班路上/g, scene)
+    .replace(/今晚的下班路上/g, scene)
+    .replace(/今晚北京的通勤尾声/g, `${timeCue}北京的工作日中段`)
+    .replace(/北京今晚的通勤尾声/g, `${timeCue}北京的工作日中段`)
+    .replace(/今晚的通勤尾声/g, `${timeCue}的工作日中段`)
+    .replace(/通勤尾声/g, "工作间隙")
+    .replace(/晚高峰/g, "工作日中段")
+    .replace(/回家路上那十几分钟/g, "耳机里的几分钟")
+    .replace(/回家那十几分钟/g, "耳机里的几分钟")
+    .replace(/下班后从写字楼到地铁口那段路/g, "写字楼和会议间隙里的几分钟")
+    .replace(/下班后的几分钟/g, "工作间隙里的几分钟")
+    .replace(/下班后几分钟/g, "工作间隙里的几分钟")
+    .replace(/下班路上/g, scene)
+    .replace(/回家路上/g, scene)
+    .replace(/北京今晚/g, `北京${timeCue}`)
+    .replace(/今晚北京/g, `${timeCue}北京`)
+    .replace(/今晚/g, timeCue)
+    .replace(/夜里/g, timeCue)
+    .replace(/夜晚/g, timeCue)
+    .replace(/夜间/g, "白天"));
 }
 
 function diversifyStockPhrases(script, track, nextTrack, context = {}) {
@@ -780,7 +816,7 @@ function pickBriefText(briefs = [], seedText = "") {
 function inferBroadcastNowFromQuery(query = "") {
   const text = cleanText(query);
   if (/(深夜|凌晨|睡前|失眠)/.test(text)) return makeBeijingDateAtHour(23);
-  if (/(晚上|夜里|今晚|下班|回家|晚高峰)/.test(text)) return makeBeijingDateAtHour(21);
+  if (/(晚上|夜里|今晚|晚高峰)/.test(text)) return makeBeijingDateAtHour(21);
   if (/(早上|清晨|早高峰|上班)/.test(text)) return makeBeijingDateAtHour(8);
   if (/(中午|午休|午间)/.test(text)) return makeBeijingDateAtHour(12);
   if (/(下午|午后)/.test(text)) return makeBeijingDateAtHour(15);

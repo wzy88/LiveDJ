@@ -6,9 +6,11 @@ const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const main = readFileSync(new URL("./main.jsx", import.meta.url), "utf8");
 
 test("prompt input shows the example as placeholder instead of prefilled text", () => {
-  assert.match(main, /const \[query, setQuery\] = useState\("今晚下班路上，想听一点华语、松弛、但不要太丧"\);/);
+  assert.match(main, /const initialRadioQuery = buildDefaultRadioQuery\(\);/);
+  assert.match(main, /const \[query, setQuery\] = useState\(initialRadioQuery\);/);
   assert.match(main, /const \[promptText, setPromptText\] = useState\(""\);/);
   assert.match(main, /<input value=\{promptText\} onChange=\{\(event\) => setPromptText\(event\.target\.value\)\} placeholder=\{query \|\| "跟 Claudio 说一句\.\.\."\} \/>/);
+  assert.doesNotMatch(main, /今晚下班路上，想听一点华语、松弛、但不要太丧/);
 });
 
 test("header keeps backend controls out of the primary user surface", () => {

@@ -46,14 +46,16 @@ function inferContentTaste(text) {
 
 function inferTimeIntent(text) {
   if (/(深夜|凌晨|睡前|失眠)/.test(text)) return "late-night";
-  if (/(晚上|夜里|今晚|下班|回家|晚高峰)/.test(text)) return "evening";
   if (/(早上|清晨|早高峰|上班)/.test(text)) return "morning";
+  if (/(上午)/.test(text)) return "morning";
   if (/(中午|午休|午间)/.test(text)) return "noon";
   if (/(下午|午后)/.test(text)) return "afternoon";
+  if (/(晚上|夜里|今晚|下班|回家|晚高峰)/.test(text)) return "evening";
   return "current";
 }
 
 function inferScene(text) {
+  if (/(上午.*工作|工作间隙|会议间隙)/.test(text)) return "工作学习";
   if (/(回家|下班|晚高峰)/.test(text)) return "回家路上";
   if (/(通勤|地铁|开车|公交|路上)/.test(text)) return "通勤路上";
   if (/(散步|走路|遛弯)/.test(text)) return "散步";
