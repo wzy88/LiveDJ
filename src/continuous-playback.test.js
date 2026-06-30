@@ -33,6 +33,15 @@ test("continuous playback prepares the media element before calling play", () =>
   assert.match(main, /await playMusicAudio\(audio, \{\s*allowMutedAutoplayRetry: Boolean\(options\.allowMutedAutoplayRetry\)\s*\}\);/);
 });
 
+test("talkover audio is prepared in the background without blocking music playback state", () => {
+  assert.match(main, /const speechAudioCacheRef = useRef\(new Map\(\)\);/);
+  assert.match(main, /function prepareSpeechAudio\(text\)/);
+  assert.match(main, /const blob = await prepareSpeechAudio\(text\);/);
+  assert.match(main, /voiceAudio\.onplaying = \(\) => \{\s*if \(token !== speechSeqRef\.current\) return;\s*setCurrentTalkSegment\(nextSegment\);/);
+  assert.match(main, /prepareSpeechAudio\(line\)\.catch\(\(\) => \{\}\);/);
+  assert.doesNotMatch(main, /正在准备口播/);
+});
+
 test("music prompt primes audio before async dialogue and starts generated queue through autoplay path", () => {
   assert.match(main, /if \(fallbackIntent === "music"\) \{\s*primeAudioElement\(\);\s*\}/);
   assert.ok(
