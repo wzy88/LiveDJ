@@ -13,6 +13,13 @@ test("prompt input shows the example as placeholder instead of prefilled text", 
   assert.doesNotMatch(main, /今晚下班路上，想听一点华语、松弛、但不要太丧/);
 });
 
+test("talkover tts uses a warm mature female voice preset", () => {
+  assert.match(main, /const talkoverVoicePreset = \{\s*voice: "zh-CN-XiaoyiNeural",\s*rate: "-12%",\s*pitch: "-2Hz",\s*volume: "\+0%"\s*\};/);
+  assert.match(main, /body: JSON\.stringify\(\{\s*text: clean,\s*\.\.\.talkoverVoicePreset\s*\}\)/);
+  assert.doesNotMatch(main, /voice: "zh-CN-XiaoxiaoNeural"/);
+  assert.doesNotMatch(main, /pitch: "\+6Hz"/);
+});
+
 test("header keeps backend controls out of the user surface", () => {
   const topActionsBlock = main.match(/<div className="topActions">[\s\S]*?<\/div>/)?.[0] || "";
   assert.ok(topActionsBlock, "top action block should be present");
