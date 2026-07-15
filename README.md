@@ -10,7 +10,8 @@ npm run build
 npm run dev
 ```
 
-The local frontend uses `http://127.0.0.1:8787` as its API base in development.
+Open the local frontend at `http://127.0.0.1:5174`. It uses
+`http://127.0.0.1:8787` as its API base in development.
 
 ## Vercel Frontend
 
