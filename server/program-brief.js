@@ -12,15 +12,18 @@ export function buildProgramBrief(query = "") {
   return {
     rawQuery: text,
     format: wantsEditorial ? "city-editorial" : "personal-companion",
-    city: city || "北京",
+    city,
     timeIntent,
     scene,
     mood: moods,
     contentTaste,
     musicTaste: {
       languages,
-      genres: inferGenres(text)
+      genres: inferGenres(text),
+      eras: inferEras(text),
+      energy: inferEnergy(text)
     },
+    useCase: inferUseCase(text),
     talkDensity: wantsEditorial ? "rich" : "medium",
     queueMode
   };
@@ -55,12 +58,13 @@ function inferTimeIntent(text) {
 }
 
 function inferScene(text) {
-  if (/(上午.*工作|工作间隙|会议间隙)/.test(text)) return "工作学习";
+  if (/(骑自行车|自行车|骑车|骑行|单车|公路车|山地车)/.test(text)) return "骑行";
+  if (/(上午.*工作|工作间隙|会议间隙|加班)/.test(text)) return "工作学习";
+  if (/(办公|办公室|工作|学习|写东西|处理任务|加班)/.test(text)) return "工作学习";
   if (/(回家|下班|晚高峰)/.test(text)) return "回家路上";
   if (/(通勤|地铁|开车|公交|路上)/.test(text)) return "通勤路上";
   if (/(散步|走路|遛弯)/.test(text)) return "散步";
   if (/(睡前|失眠|深夜)/.test(text)) return "睡前";
-  if (/(工作|学习|写东西)/.test(text)) return "工作学习";
   return "";
 }
 
@@ -76,7 +80,9 @@ function inferMoods(text) {
   if (/(有故事|故事感|叙事)/.test(text)) moods.push("有故事");
   if (/(别太丧|不要太丧|不太丧)/.test(text)) moods.push("不太丧");
   if (/(emo|难过|低落|想哭)/.test(text)) moods.push("情绪");
-  if (/(开心|热闹|提神|有劲)/.test(text)) moods.push("明亮");
+  if (/(开心|热闹|提神|有劲|犯困|防困|醒神)/.test(text)) moods.push("明亮", "提神");
+  if (/(节奏感|节奏强|带劲|律动|动感)/.test(text)) moods.push("节奏感");
+  if (/(骑自行车|自行车|骑车|骑行|单车|公路车|山地车|公里|km|KM|Km)/.test(text)) moods.push("节奏感");
   return [...new Set(moods)];
 }
 
@@ -88,6 +94,29 @@ function inferGenres(text) {
   if (/(说唱|rap|嘻哈)/i.test(text)) genres.push("说唱");
   if (/(流行|pop)/i.test(text)) genres.push("流行");
   return genres;
+}
+
+function inferEras(text) {
+  const eras = [];
+  if (/(经典|老歌|怀旧|复古|年代感|老派|港乐)/.test(text)) eras.push("经典老歌");
+  return eras;
+}
+
+function inferEnergy(text) {
+  const energy = [];
+  if (/(节奏感强|节奏强|节奏感|带劲|动感|律动|提神|犯困|防困|醒神)/.test(text)) energy.push("节奏感强");
+  return energy;
+}
+
+function inferUseCase(text) {
+  const useCase = [];
+  if (/(办公|办公室|工作|学习|写东西|处理任务|加班).*(犯困|困|提神|防困|醒神)|(?:犯困|困|提神|防困|醒神).*(办公|办公室|工作|学习|写东西|处理任务|加班)/.test(text)) {
+    useCase.push("办公防困");
+  }
+  if (/(骑自行车|自行车|骑车|骑行|单车|公路车|山地车)/.test(text)) {
+    useCase.push("骑行陪伴");
+  }
+  return useCase;
 }
 
 function inferQueueMode(text) {

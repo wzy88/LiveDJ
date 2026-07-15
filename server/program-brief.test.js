@@ -34,3 +34,33 @@ test("program brief does not treat bare commute or workday copy as evening", () 
   assert.equal(brief.timeIntent, "morning");
   assert.equal(brief.scene, "工作学习");
 });
+
+test("program brief parses classic energetic office anti-sleep intent", () => {
+  const brief = buildProgramBrief("我想听经典老歌，给我推荐一些，最好节奏感强一点，不然下午办公会犯困。");
+
+  assert.equal(brief.timeIntent, "afternoon");
+  assert.equal(brief.scene, "工作学习");
+  assert.ok(brief.mood.includes("提神"));
+  assert.ok(brief.mood.includes("节奏感"));
+  assert.ok(brief.musicTaste.eras.includes("经典老歌"));
+  assert.ok(brief.musicTaste.energy.includes("节奏感强"));
+  assert.ok(brief.useCase.includes("办公防困"));
+});
+
+test("program brief treats overtime as work scene without forcing evening", () => {
+  const brief = buildProgramBrief("我现在在加班，播点音乐");
+
+  assert.equal(brief.format, "personal-companion");
+  assert.equal(brief.city, "");
+  assert.equal(brief.timeIntent, "current");
+  assert.equal(brief.scene, "工作学习");
+});
+
+test("program brief parses cycling goal as movement scene", () => {
+  const brief = buildProgramBrief("我在骑自行车，来点音乐，今天的目标是30Km。");
+
+  assert.equal(brief.format, "personal-companion");
+  assert.equal(brief.scene, "骑行");
+  assert.ok(brief.mood.includes("节奏感"));
+  assert.ok(brief.useCase.includes("骑行陪伴"));
+});

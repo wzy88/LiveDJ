@@ -420,7 +420,10 @@ function App() {
     setCurrentIndex(safeIndex);
     setActiveTrack(track);
     setResolvedTrack(track.resolvedTrack);
-    setDjLine(track.script?.opening || `正在播放《${track.title}》。`);
+    const scheduledOpening = Array.isArray(track.script?.stages)
+      ? track.script.stages[0]?.text
+      : track.script?.opening;
+    if (scheduledOpening) setDjLine(scheduledOpening);
     setStatus(`正在播放：${track.title} - ${track.artist}`);
     const audio = audioRef.current;
     if (audio) {
@@ -581,7 +584,7 @@ function App() {
     if (scheduledTalkTrackIdRef.current === track.id) return;
     scheduledTalkTrackIdRef.current = track.id;
     const durationMs = Math.max(120000, Math.round((track.resolvedTrack?.durationSec || track.durationSec || 220) * 1000));
-    const stages = Array.isArray(script.stages) && script.stages.length
+    const stages = Array.isArray(script.stages)
       ? script.stages
       : buildFallbackTalkStages(script, track);
     stages.forEach((stage) => {
@@ -858,11 +861,33 @@ function App() {
       appendAfterCurrent
     });
     const nextQueue = program?.visibleQueue || program?.queue || [];
-    const reply = buildProgramReadyReply(program, { mode, query: nextQuery });
+    const fallbackReply = buildProgramReadyReply(program, { mode, query: nextQuery });
+    const reply = await buildNaturalProgramReply(program, {
+      mode,
+      query: nextQuery,
+      fallbackReply
+    });
     appendDialogueMessage("dj", reply);
     setDjLine(reply);
     if (!appendAfterCurrent && nextQueue.length) {
       await continuePlaybackFromIndex(0, nextQueue);
+    }
+  }
+
+  async function buildNaturalProgramReply(program, { mode, query, fallbackReply }) {
+    try {
+      const result = await fetchJson("/api/program-reply", {
+        method: "POST",
+        body: JSON.stringify({
+          message: query,
+          mode,
+          fallbackReply,
+          program
+        })
+      });
+      return result?.reply || fallbackReply;
+    } catch {
+      return fallbackReply;
     }
   }
 

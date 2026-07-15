@@ -12,9 +12,10 @@ import { importPlaylistText, importPlaylistTracks, loadGraph, loadProfile, recom
 import { resolvePlayableTrack } from "./music.js";
 import { loadPlayableIndex, storePlayableRecord } from "./playable-index.js";
 import { buildRadioProgram } from "./radio-program.js";
-import { extractTracksFromPlaylistScreenshot, generateDialogueReplyWithLlm, getLlmStatus } from "./llm.js";
+import { extractTracksFromPlaylistScreenshot, generateDialogueReplyWithLlm, generateProgramReplyWithLlm, getLlmStatus } from "./llm.js";
 import { tracksFromPlaylistUrl } from "./playlist-import.js";
 import { proxyAudioRequest } from "./audio-proxy.js";
+import { fetchBeijingBroadcastContext } from "./broadcast-context.js";
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -251,6 +252,7 @@ app.get("/api/program", async (req, res) => {
 app.post("/api/dialogue", async (req, res) => {
   try {
     const profile = loadProfile();
+    const broadcastContext = await fetchBeijingBroadcastContext({ timeoutMs: 1800 });
     const summary = (() => {
       try {
         return summarizeProfile(profile, loadGraph());
@@ -263,7 +265,22 @@ app.post("/api/dialogue", async (req, res) => {
       query: req.body?.query || "",
       profile: { ...profile, ...summary },
       activeTrack: req.body?.activeTrack || null,
-      queue: Array.isArray(req.body?.queue) ? req.body.queue : []
+      queue: Array.isArray(req.body?.queue) ? req.body.queue : [],
+      broadcastContext
+    });
+    res.json(reply);
+  } catch (error) {
+    res.status(503).json({ error: error.message });
+  }
+});
+
+app.post("/api/program-reply", async (req, res) => {
+  try {
+    const reply = await generateProgramReplyWithLlm({
+      message: req.body?.message || "",
+      mode: req.body?.mode || "replace",
+      program: req.body?.program || {},
+      fallbackReply: req.body?.fallbackReply || ""
     });
     res.json(reply);
   } catch (error) {

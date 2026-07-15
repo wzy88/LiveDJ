@@ -68,8 +68,125 @@ test("talk brief turns user prompt, song material, and Beijing context into an e
   assert.equal(brief.programFunction, "answer_why_this_song_now");
   assert.equal(brief.primaryAngle, "user_scene");
   assert.deepEqual(brief.requiredMaterials.slice(0, 4), ["user_scene", "song_reason", "current_track", "concrete_material"]);
-  assert.match(brief.segmentJobs.opening, /场景|歌名|歌手/);
+  assert.equal(brief.talkStrategy, "material_anchored");
+  assert.match(brief.segmentJobs.opening, /场景|动作|时间|声音|必要时/);
+  assert.doesNotMatch(brief.segmentJobs.opening, /立刻点出歌名或歌手/);
   assert.match(brief.segmentJobs.bridge, /素材|判断/);
   assert.match(brief.segmentJobs.nextTease, /下一首|接/);
   assert.match(brief.qualityGate.join(" "), /用户诉求|当前歌曲|素材|拒稿/);
+});
+
+test("talk brief uses scene-first strategy for plain situation prompts", () => {
+  const brief = buildTalkBrief({
+    query: "我现在在加班，播点音乐",
+    queueIndex: 0,
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    brief: {
+      scene: "工作学习",
+      mood: ["松弛"]
+    }
+  });
+
+  assert.equal(brief.talkStrategy, "scene_first");
+  assert.equal(brief.programFunction, "companion_scene_progression");
+  assert.match(brief.segmentJobs.opening, /状态|动作|时间|声音/);
+  assert.match(brief.segmentJobs.bridge, /动作|身体|目标|环境/);
+  assert.match(brief.writingTask, /陪用户经历这个时刻/);
+  assert.match(brief.qualityGate.join(" "), /不要复读用户场景词/);
+  assert.match(brief.qualityGate.join(" "), /场景是底色/);
+  assert.doesNotMatch(brief.writingTask, /为什么此刻放这首歌/);
+  assert.doesNotMatch(brief.segmentJobs.opening, /立刻点出歌名或歌手/);
+});
+
+test("talk brief treats cycling goals as scene progression, not song-fit proof", () => {
+  const brief = buildTalkBrief({
+    query: "我在骑自行车，来点音乐，今天的目标是30Km。",
+    queueIndex: 0,
+    track: {
+      title: "一半一半",
+      artist: "Top Barry / INDEcompany",
+      scenes: [{ value: "骑行" }],
+      moods: [{ value: "明亮" }],
+      genres: [{ value: "R&B" }]
+    },
+    brief: {
+      format: "personal-companion",
+      scene: "骑行",
+      contentTaste: [],
+      musicTaste: { energy: [] },
+      useCase: ["骑行陪伴"]
+    }
+  });
+
+  assert.equal(brief.talkStrategy, "scene_first");
+  assert.equal(brief.programFunction, "companion_scene_progression");
+  assert.match(brief.segmentJobs.bridge, /动作|身体|目标|环境/);
+  assert.match(brief.qualityGate.join(" "), /音乐只点到一两次/);
+  assert.doesNotMatch(brief.writingTask, /证明|为什么此刻放这首歌/);
+});
+
+test("plain activity prompts stay scene-first even when artist context is available", () => {
+  const brief = buildTalkBrief({
+    query: "我在骑自行车，来点音乐，今天的目标是30Km。",
+    track: {
+      title: "海屿你",
+      artist: "马也_Crabbit",
+      scenes: [{ value: "骑行" }],
+      moods: [{ value: "明亮" }]
+    },
+    brief: {
+      format: "personal-companion",
+      scene: "骑行",
+      contentTaste: [],
+      musicTaste: { energy: [] },
+      useCase: ["骑行陪伴"]
+    },
+    contentPack: {
+      artist: {
+        name: "马也_Crabbit",
+        brief: "聚声匠主理人"
+      },
+      research: {
+        audibleCues: ["R&B低频"]
+      }
+    }
+  });
+
+  assert.equal(brief.talkStrategy, "scene_first");
+  assert.equal(brief.programFunction, "companion_scene_progression");
+});
+
+test("talk brief turns the program clock callback into a continuity writing job", () => {
+  const brief = buildTalkBrief({
+    query: "我现在在加班，播点音乐",
+    queueIndex: 2,
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    brief: {
+      format: "personal-companion",
+      scene: "工作学习",
+      contentTaste: []
+    },
+    programClock: {
+      role: "callback",
+      label: "前文回声",
+      playedFields: ["opening"],
+      writingInstruction: "承认时间已经过去，呼应前面说过的动作、状态或环境，让听众感到你记得。"
+    }
+  });
+
+  assert.equal(brief.programClock.role, "callback");
+  assert.equal(brief.programClock.label, "前文回声");
+  assert.deepEqual(brief.programClock.playedFields, ["opening"]);
+  assert.match(brief.programClock.writingInstruction, /时间已经过去|呼应|记得/);
+  assert.match(brief.writingTask, /前文回声|时间已经过去|呼应/);
 });

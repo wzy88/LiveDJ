@@ -80,6 +80,29 @@ test("recommend honors explicit language requests over imported playlist taste",
   );
 });
 
+test("recommend honors classic energetic office anti-sleep requests", () => {
+  const result = recommend({
+    query: "我想听经典老歌，给我推荐一些，最好节奏感强一点，不然下午办公会犯困。",
+    limit: 10,
+    refreshSeed: "classic-office-anti-sleep-test"
+  });
+  const top = result.recommendations.slice(0, 8);
+  const debug = top.map((track) => `${track.title} - ${track.artist} | ${(track.genres || []).map((item) => item.value).join("/")} | ${(track.moods || []).map((item) => item.value).join("/")} | ${(track.scenes || []).map((item) => item.value).join("/")} | ${(track.evidence || []).join(";")}`).join("\n");
+
+  assert.ok(top.some(isClassicEnergeticOldie), `expected classic energetic oldies in top 8, got:\n${debug}`);
+  assert.ok(isClassicEnergeticOldie(top[0]) || isClassicEnergeticOldie(top[1]), `expected classic energetic oldie near the front, got:\n${debug}`);
+  assert.ok(
+    top.filter((track) => (track.evidence || []).some((item) => /经典老歌|节奏感|办公防困/.test(item))).length >= 4,
+    `expected explicit office-oldie evidence to dominate, got:\n${debug}`
+  );
+});
+
 function hasValue(track, key, value) {
   return (track?.[key] || []).some((item) => item.value === value);
+}
+
+function isClassicEnergeticOldie(track = {}) {
+  const text = `${track.title || ""} ${track.artist || ""} ${(track.genres || []).map((item) => item.value).join(" ")} ${(track.moods || []).map((item) => item.value).join(" ")} ${(track.evidence || []).join(" ")}`;
+  return /(Beyond|凤凰传奇|费翔|叶蒨文|李克勤|郭富城|张国荣|刘德华|海阔天空|光辉岁月|最炫民族风|自由飞翔|冬天里的一把火|潇洒走一回|护花使者|对你爱不完)/.test(text)
+    && /(明亮|摇滚|电子|节奏感|提神|经典老歌|办公防困)/.test(text);
 }

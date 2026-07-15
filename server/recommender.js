@@ -1,22 +1,27 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 import { getCleanPlayableRecord } from "./playable-index.js";
 import { resolvePlayableTrack } from "./music.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const graphPath = path.join(rootDir, "data", "song-graph.json");
+const graphGzipPath = `${graphPath}.gz`;
 const profilePath = path.join(rootDir, "data", "user-profile.json");
 
 let graphCache = null;
 
 export function loadGraph() {
   if (!graphCache) {
-    if (!fs.existsSync(graphPath)) {
+    if (!fs.existsSync(graphPath) && !fs.existsSync(graphGzipPath)) {
       throw new Error("song graph is missing. Run npm run graph:build first.");
     }
-    const graph = JSON.parse(fs.readFileSync(graphPath, "utf8"));
+    const rawGraph = fs.existsSync(graphPath)
+      ? fs.readFileSync(graphPath, "utf8")
+      : zlib.gunzipSync(fs.readFileSync(graphGzipPath)).toString("utf8");
+    const graph = JSON.parse(rawGraph);
     graph.byId = new Map(graph.songs.map((song) => [song.id, song]));
     graph.byTitle = new Map();
     graph.artistNames = [];
@@ -464,8 +469,12 @@ function extractExplicitIntent(query = "") {
   add("mood", "松弛", /松弛|放松|轻松|chill/i);
   add("mood", "温柔", /温柔|柔和/);
   add("mood", "安静", /安静|睡前|失眠|夜里|深夜/);
-  add("mood", "明亮", /开心|明亮|提神|振奋|有劲/);
+  add("mood", "明亮", /开心|明亮|提神|振奋|有劲|犯困|防困|醒神/);
+  add("energy", "节奏感强", /节奏感强|节奏强|节奏感|带劲|动感|律动|提神|犯困|防困|醒神/);
+  add("era", "经典老歌", /经典|老歌|怀旧|复古|年代感|老派|港乐/);
+  add("useCase", "办公防困", /(?:办公|办公室|工作|学习|写东西|处理任务|加班).*(?:犯困|困|提神|防困|醒神)|(?:犯困|困|提神|防困|醒神).*(?:办公|办公室|工作|学习|写东西|处理任务|加班)/);
   add("scene", "通勤", /通勤|下班|上班|地铁|路上|回家/);
+  add("scene", "学习工作", /办公|办公室|工作|学习|写东西|处理任务|加班/);
   add("scene", "夜晚", /夜晚|晚上|夜里|深夜|凌晨/);
   add("scene", "旅行散步", /旅行|散步|走走|城市漫游/);
 
@@ -473,6 +482,7 @@ function extractExplicitIntent(query = "") {
 }
 
 function addExplicitRequestCandidates({ graph, scores, evidence, poolIds, explicitArtists = [], explicitIntent = [] }) {
+  const wantsClassicOldies = explicitIntent.some((intent) => intent.type === "era" && intent.value === "经典老歌");
   for (const artist of explicitArtists) {
     for (const song of graph.songs) {
       if (leadArtist(song).includes(normalizeArtist(artist))) {
@@ -486,6 +496,8 @@ function addExplicitRequestCandidates({ graph, scores, evidence, poolIds, explic
   for (const intent of explicitIntent) {
     const matched = graph.songs
       .filter((song) => matchesExplicitIntent(song, [intent]))
+      .filter((song) => !wantsClassicOldies || intent.type === "era" || isClassicOldie(song))
+      .filter((song) => !wantsClassicOldies || intent.type !== "mood" || intent.value !== "明亮" || isEnergeticForWork(song))
       .sort((left, right) => (right.score || 0) + (right.appearances || 0) * 2 - ((left.score || 0) + (left.appearances || 0) * 2))
       .slice(0, 1000);
     for (const song of matched) {
@@ -498,14 +510,20 @@ function addExplicitRequestCandidates({ graph, scores, evidence, poolIds, explic
 
 function scoreExplicitIntentFit(song, explicitIntent = []) {
   let score = 0;
+  const wantsClassicOldies = explicitIntent.some((intent) => intent.type === "era" && intent.value === "经典老歌");
   for (const intent of explicitIntent || []) {
     if (!matchesExplicitIntent(song, [intent])) continue;
+    if (wantsClassicOldies && intent.type !== "era" && !isClassicOldie(song)) continue;
+    if (wantsClassicOldies && intent.type === "mood" && intent.value === "明亮" && !isEnergeticForWork(song)) continue;
     score += explicitIntentScore(intent, song);
   }
   return score;
 }
 
 function explicitIntentCandidateWeight(intent = {}) {
+  if (intent.type === "era") return 620;
+  if (intent.type === "energy") return 520;
+  if (intent.type === "useCase") return 500;
   if (intent.type === "genre") return 430;
   if (intent.type === "language") return 450;
   if (intent.type === "mood") return 210;
@@ -516,12 +534,17 @@ function explicitIntentCandidateWeight(intent = {}) {
 function explicitIntentScore(intent = {}, song = {}) {
   const weight = maxValueWeight(song, intent.type, intent.value);
   const base = {
+    era: 520,
+    energy: 420,
+    useCase: 390,
     genre: 340,
     language: 380,
     mood: 160,
     scene: 150
   }[intent.type] || 100;
-  return base + Math.min(90, weight * 8);
+  const synergy = intent.type === "era" && isEnergeticForWork(song) ? 160 : 0;
+  const penalty = intent.type === "era" && !isEnergeticForWork(song) ? -220 : 0;
+  return base + Math.min(90, weight * 8) + synergy + penalty;
 }
 
 function matchesExplicitIntent(song, explicitIntent = []) {
@@ -531,6 +554,9 @@ function matchesExplicitIntent(song, explicitIntent = []) {
     if (intent.type === "language") return hasWeightedValue(song.languages, intent.value) || hasWeightedValue(song.genres, intent.value);
     if (intent.type === "mood") return hasWeightedValue(song.moods, intent.value);
     if (intent.type === "scene") return hasWeightedValue(song.scenes, intent.value);
+    if (intent.type === "era") return isClassicOldie(song);
+    if (intent.type === "energy") return isEnergeticForWork(song);
+    if (intent.type === "useCase") return isOfficeAntiSleepSong(song);
     return false;
   });
 }
@@ -544,7 +570,10 @@ function maxValueWeight(song = {}, type, expected) {
     genre: song.genres,
     language: song.languages,
     mood: song.moods,
-    scene: song.scenes
+    scene: song.scenes,
+    era: isClassicOldie(song) ? [{ value: expected, weight: 10 }] : [],
+    energy: isEnergeticForWork(song) ? [{ value: expected, weight: 10 }] : [],
+    useCase: isOfficeAntiSleepSong(song) ? [{ value: expected, weight: 10 }] : []
   }[type] || [];
   return Math.max(0, ...(source || []).filter((item) => item.value === expected).map((item) => Number(item.weight) || 0));
 }
@@ -634,6 +663,23 @@ function isChineseSong(song) {
   if (hasChineseText) return true;
   if (!languageValues.includes("华语") && !languageValues.includes("粤语")) return false;
   return /孙燕姿|陈奕迅|林忆莲|梁静茹|蔡健雅|周杰伦|王菲|田馥甄|五月天|方大同|陶喆|李荣浩|毛不易|邓紫棋|gem|eason|tanya|hebe/i.test(song.artist);
+}
+
+function isClassicOldie(song = {}) {
+  const text = `${song.title || ""} ${song.artist || ""} ${(song.genres || []).map((item) => item.value).join(" ")}`;
+  if (/(说唱张学友|致敬|prod\.|beat|remix|改编|采样|mashup|串烧|翻唱)/i.test(text)) return false;
+  return /(Beyond|凤凰传奇|费翔|叶蒨文|李克勤|郭富城|张国荣|刘德华|张学友|谭咏麟|梅艳芳|林子祥|周华健|伍佰|齐秦|罗大佑|任贤齐|海阔天空|光辉岁月|最炫民族风|自由飞翔|冬天里的一把火|潇洒走一回|护花使者|对你爱不完|Monica|忘情水|笨小孩|朋友|花心|挪威的森林)/i.test(text);
+}
+
+function isEnergeticForWork(song = {}) {
+  const text = `${song.title || ""} ${song.artist || ""} ${(song.genres || []).map((item) => item.value).join(" ")} ${(song.moods || []).map((item) => item.value).join(" ")} ${(song.scenes || []).map((item) => item.value).join(" ")}`;
+  if (/(钢琴|安静|睡前|白噪音|失眠)/.test(text) && !/(摇滚|电子|明亮|凤凰传奇|郭富城|李克勤|费翔)/.test(text)) return false;
+  if (/(春夏秋冬|泪桥|情人知己|讲不出再见|每天爱你多一些|心太软)/.test(text)) return false;
+  return /(明亮|摇滚|电子|粤语|流行|节奏|动感|带劲|凤凰传奇|郭富城|李克勤|费翔|Beyond|冬天里的一把火|最炫民族风|自由飞翔|护花使者|对你爱不完|Monica)/i.test(text);
+}
+
+function isOfficeAntiSleepSong(song = {}) {
+  return isEnergeticForWork(song) && (isClassicOldie(song) || hasWeightedValue(song.scenes, "学习工作") || hasWeightedValue(song.scenes, "通勤"));
 }
 
 function hasProviderCandidate(song) {
