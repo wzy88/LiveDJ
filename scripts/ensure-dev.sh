@@ -15,7 +15,7 @@ cd "$STABLE_ROOT"
 frontend_ok=0
 backend_ok=0
 
-if /usr/sbin/lsof -iTCP:5173 -sTCP:LISTEN -n -P >/dev/null 2>&1; then
+if /usr/sbin/lsof -iTCP:5174 -sTCP:LISTEN -n -P >/dev/null 2>&1; then
   frontend_ok=1
 fi
 
