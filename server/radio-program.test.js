@@ -898,6 +898,32 @@ test("plain overtime companion program does not inject city editorial material",
   }
 });
 
+test("plain overtime fallback follows one concrete task thread instead of generic companion imagery", async () => {
+  const program = await buildRadioProgram({
+    query: "我现在在加班，播点音乐",
+    limit: 6,
+    maxWaitMs: 0,
+    scriptBudgetMs: 0,
+    songContextBudgetMs: 0,
+    artistContextBudgetMs: 0,
+    trackResearchBudgetMs: 0,
+    refreshSeed: "plain-overtime-concrete-thread-test"
+  });
+
+  const spokenByRole = Object.fromEntries(program.queue.slice(0, 6).map((track) => [
+    track.programClock?.role,
+    (track.script?.stages || []).map((stage) => stage.text).join(" ")
+  ]));
+  const joined = Object.values(spokenByRole).join("\n");
+
+  assert.match(spokenByRole.block_open, /最短|最小|一件/);
+  assert.match(spokenByRole.presence_touch, /我还在|眼前这一行/);
+  assert.match(spokenByRole.callback, /刚才|已经|往前/);
+  assert.match(spokenByRole.mid_anchor, /别再开新的|收尾|排到后面/);
+  assert.match(spokenByRole.soft_handoff, /接杯水|回来|继续排|不用重新找状态/);
+  assert.doesNotMatch(joined, /肩膀松一点|白天的杂音|房间里多一点空气|时间感会变得明显|能停下来的位置|最后一点尾巴|紧绷里退/);
+});
+
 test("cycling goal companion program uses riding language instead of work fallback", async () => {
   const program = await buildRadioProgram({
     query: "我在骑自行车，来点音乐，今天的目标是30Km。",

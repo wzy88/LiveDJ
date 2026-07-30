@@ -196,6 +196,9 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
           "如果有 talkBrief，把它当成电台编辑给你的写作任务：先回应用户命题，再把歌曲、热评/故事、歌手材料、天气、新闻、娱乐八卦和城市语境自然揉成一段。",
           "talkBrief.writingTask 要优先执行。scene_first / companion_scene_progression 时，核心是陪用户经历这个时刻，不是证明歌曲适配；material_anchored / answer_why_this_song_now 时，才需要回答为什么此刻放这首歌。整段口播合计控制在200-300字以内，再拆成 opening、bridges、nextTease。",
           "如果 talkBrief.programClock 存在，只重点写 playedFields 中真正会播出的字段，并严格执行 writingInstruction。节目钟优先于逐首完整解说。",
+          "每次口播只保留一个清楚的编辑判断。不要为了显得有陪伴感，把手机、消息、窗外、风、灯、屏幕、房间、呼吸、暂停、重启、翻篇拼成一组氛围意象；用户输入没有这些物件时尤其不要主动添加。",
+          "前奏、副歌、鼓点、乐器、人声位置和演唱质感等可听见细节，只能来自 track/contentPack.research/talkBrief.materials.songResearch 明确给出的资料；没有资料就不描写。",
+          "不要虚构你和听众共同经历过的上次、以前、每次或固定习惯；只有输入明确提供的历史才能提。",
           "如果 talkBrief.programFunction 是 companion_scene_progression：opening 进入用户状态，bridge 用动作/身体/环境/目标推进，nextTease 轻轻转下一首；整段最多一两处明确讲音乐，不要连续写节奏、低频、踏频、注意力、托住。",
           "scene_first 可写的不是“歌为什么适合场景”，而是四类东西：用户正在做的下一个小动作、身体的松紧变化、周围环境的真实细节、目标推进到哪一小段。歌曲只作为陪伴存在，不要把音乐术语和场景动作硬拴在一起。",
           "如果 talkBrief.programFunction 是 answer_why_this_song_now，每段必须服务一个节目功能：opening 建立用户状态和当前歌曲，bridge 用一个具体听感或素材形成判断，nextTease 解释下一首如何接上。",
@@ -335,6 +338,8 @@ export async function generateTalkScriptWithLlm({ track, context, fallbackScript
     if (!materialGate.ok) return makeRejectedScript(`material_gate:${materialGate.reasons.join(",")}`);
     const sceneFirstGate = evaluateSceneFirstTalkQuality({ opening, bridges, nextTease, context });
     if (!sceneFirstGate.ok) return makeRejectedScript(`scene_first_overexplained:${sceneFirstGate.reasons.join(",")}`);
+    const groundingGate = evaluateTalkScriptGrounding({ opening, bridges, nextTease, track, context });
+    if (!groundingGate.ok) return makeRejectedScript(`grounding_gate:${groundingGate.reasons.join(",")}`);
     const recentLines = (context.recentLines || []).map((line) => cleanLine(line));
     if (!mentionsTrack(opening, track) && isTooSimilarToRecent(opening, recentLines)) return makeRejectedScript("opening_too_similar");
     if (!opening || bridges.length < 1) return makeRejectedScript(!opening ? "missing_opening" : "missing_bridge");
@@ -705,6 +710,62 @@ function mentionsConcreteBriefMaterial(text = "", talkBrief = {}, context = {}) 
 
 function hasSceneFirstConcreteDetail(text = "") {
   return /灯|屏幕|桌面|窗|夜色|手|肩膀|呼吸|声音|节奏|风|路口|键盘|消息|文件|耳朵|身体|房间|空气|速度|轮子|注意力/.test(cleanLine(text));
+}
+
+function evaluateTalkScriptGrounding({ opening = "", bridges = [], nextTease = "", track = {}, context = {} } = {}) {
+  const joined = cleanLine([opening, ...(bridges || []), nextTease].filter(Boolean).join(" "));
+  const reasons = [];
+  if (hasGenericSceneCollage(joined, context)) reasons.push("generic_scene_collage");
+  if (hasUnsupportedAudibleDetails(joined, track, context)) reasons.push("unsupported_audible_detail");
+  if (hasInventedSharedMemory(joined, context)) reasons.push("invented_shared_memory");
+  return { ok: reasons.length === 0, reasons };
+}
+
+function hasGenericSceneCollage(text = "", context = {}) {
+  const clean = cleanLine(text);
+  const supplied = cleanLine([
+    context.query,
+    context.broadcastContext?.weatherSummary,
+    context.broadcastContext?.localSceneSummary,
+    context.talkBrief?.materials?.cityEditorial
+  ].filter(Boolean).join(" "));
+  const motifGroups = [
+    /手机|消息/,
+    /窗外|窗边|窗前|窗户/,
+    /风|夜风/,
+    /灯|灯光|路灯/,
+    /屏幕|光标/,
+    /房间|屋里/,
+    /呼吸|肩膀/,
+    /暂停|重启|翻篇|重新开始/
+  ];
+  const inventedMotifCount = motifGroups.filter((pattern) => pattern.test(clean) && !pattern.test(supplied)).length;
+  return inventedMotifCount >= 4;
+}
+
+function hasUnsupportedAudibleDetails(text = "", track = {}, context = {}) {
+  const clean = cleanLine(text);
+  const allowed = cleanLine([
+    ...(track.genres || []).map((item) => item?.value || item),
+    ...(track.moods || []).map((item) => item?.value || item),
+    ...(context.contentPack?.research?.audibleCues || []),
+    ...(context.contentPack?.research?.talkSeeds || []),
+    context.talkBrief?.materials?.songResearch
+  ].filter(Boolean).join(" "));
+  const detailTerms = ["钢琴", "吉他", "贝斯", "鼓点", "鼓机", "弦乐", "合成器", "前奏", "副歌", "间奏", "尾奏", "和声", "女声", "男声", "气声", "人声位置"];
+  const unsupported = detailTerms.filter((term) => clean.includes(term) && !allowed.includes(term));
+  return unsupported.length >= 2;
+}
+
+function hasInventedSharedMemory(text = "", context = {}) {
+  const clean = cleanLine(text);
+  if (!/(我记得(?:上次|以前|你)|我们(?:上次|以前)|你(?:以前|每次|总是)|今天也照旧)/.test(clean)) return false;
+  const suppliedHistory = cleanLine([
+    context.query,
+    ...(context.profile?.listeningHistory || []),
+    ...(context.profile?.memories || [])
+  ].filter(Boolean).join(" "));
+  return !/(上次|以前|每次|总是|照旧)/.test(suppliedHistory);
 }
 
 function extractMaterialSeeds(value = "") {

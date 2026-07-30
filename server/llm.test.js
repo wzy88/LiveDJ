@@ -429,6 +429,161 @@ test("talk script rejects over-explained scene-first music matching", async () =
   assert.match(script.reason, /scene_first_overexplained/);
 });
 
+test("talk script rejects generic scene collages built from stock companion imagery", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene"],
+                opening: "手机又亮了一下，窗外的风还在吹，桌边那盏灯没有关。",
+                bridges: [
+                  "先把今天按下暂停，让屏幕暗一点，再给自己一次重启的机会。",
+                  "不用急着翻篇，等房间安静下来，呼吸也会慢一点。"
+                ],
+                nextTease: "后面的声音会继续陪你把夜晚放轻。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    context: {
+      query: "我现在在加班，播点音乐",
+      brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      }
+    },
+    fallbackScript: {
+      opening: "先从手边最小的一件事开始。",
+      bridges: ["回完最短的那条消息。"],
+      nextTease: "后面的歌继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /generic_scene_collage/);
+});
+
+test("talk script rejects audible details that are absent from supplied research", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "song_research",
+                usedMaterials: ["current_track", "song_research"],
+                opening: "这首先留在旁边，不需要把注意力从工作上拿走。",
+                bridges: [
+                  "前奏里的钢琴很快退到后面，副歌突然加进鼓点，女声还带着明显的气声。",
+                  "这些声音让桌前这一段不至于太闷。"
+                ],
+                nextTease: "下一首会把速度稍微抬高。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "未知歌曲",
+      artist: "未知歌手",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    context: {
+      query: "工作时听点不吵的歌",
+      brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      },
+      contentPack: { research: {} }
+    },
+    fallbackScript: {
+      opening: "先把歌放在旁边。",
+      bridges: ["不用分神听。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /unsupported_audible_detail/);
+});
+
+test("talk script rejects fictional shared memories with the listener", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track"],
+                opening: "我记得上次陪你加班时，你也是把手机扣在桌边，等这首歌播完才起身。",
+                bridges: [
+                  "我们以前总在这个时候听点轻的，今天也照旧。",
+                  "先把眼前这一件事处理掉。"
+                ],
+                nextTease: "下一首继续留在旁边。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团"
+    },
+    context: {
+      query: "我现在在加班，播点音乐",
+      brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      }
+    },
+    fallbackScript: {
+      opening: "先把眼前这一件事处理掉。",
+      bridges: ["歌放在旁边就好。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /invented_shared_memory/);
+});
+
 test("talk script rejects subtle scene-first song-fit proof lines", async () => {
   globalThis.fetch = async () => ({
     ok: true,
