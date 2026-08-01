@@ -17,21 +17,29 @@ export function reloadEnv({ override = false } = {}) {
 export function saveLocalEnv(updates = {}) {
   const existing = readEnvFile(localEnvPath);
   const next = { ...existing };
+  const runtimeUpdates = {};
   for (const [key, value] of Object.entries(updates)) {
     const cleanKey = String(key || "").trim();
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(cleanKey)) continue;
     const cleanValue = String(value ?? "").trim();
     if (!cleanValue) {
       delete next[cleanKey];
+      delete process.env[cleanKey];
     } else {
       next[cleanKey] = cleanValue;
+      runtimeUpdates[cleanKey] = cleanValue;
     }
   }
+  Object.assign(process.env, runtimeUpdates);
   const body = Object.entries(next)
     .map(([key, value]) => `${key}=${quoteEnvValue(value)}`)
     .join("\n");
-  fs.writeFileSync(localEnvPath, body ? `${body}\n` : "");
-  reloadEnv({ override: true });
+  try {
+    fs.writeFileSync(localEnvPath, body ? `${body}\n` : "");
+    reloadEnv({ override: true });
+  } catch (error) {
+    console.warn(`local env could not be persisted: ${error.message}`);
+  }
 }
 
 function loadDotEnv(filePath, { override = false } = {}) {

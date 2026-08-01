@@ -10,17 +10,21 @@ npm run build
 npm run dev
 ```
 
-The local frontend uses `http://127.0.0.1:8787` as its API base in development.
+Open the local frontend at `http://127.0.0.1:5174`. It uses
+`http://127.0.0.1:8787` as its API base in development.
 
 ## Vercel Frontend
 
-Vercel can deploy the frontend from this repository:
+Vercel can deploy the frontend and the `/api/*` Express backend from this
+repository:
 
 - Build command: `npm run build`
 - Output directory: `dist`
-- Environment variable: `VITE_API_BASE=https://your-backend-domain`
+- Environment variable: leave `VITE_API_BASE` unset for same-origin `/api`
 
-Use `VITE_API_BASE` when the backend is deployed separately. Without it, the production frontend calls same-origin `/api`.
+Use `VITE_API_BASE` only when the backend is deployed separately. Without it,
+the production frontend calls same-origin `/api`, which is handled by
+`api/[...path].js` on Vercel.
 
 ## Backend
 
@@ -30,9 +34,29 @@ The backend is a long-running Node service:
 npm start
 ```
 
+### Vercel Hobby
+
+The committed `api/[...path].js` imports the Express app as a Vercel Function.
+The service reads the committed `data/song-graph.json.gz`, so no separate graph
+upload is required for the current lite graph.
+
+After Vercel deploys `main`, verify:
+
+```bash
+curl https://claudio-radio-web.vercel.app/api/health
+curl https://claudio-radio-web.vercel.app/api/graph/stats
+```
+
+Vercel Functions do not provide persistent project storage. Imported playlists,
+feedback, playable-source cache, and in-app LLM config can survive within a warm
+function instance, but can be lost after a cold start until real user storage is
+added.
+
 It serves both `/api/*` and the built `dist/` frontend when `dist` exists.
 
-Recommended backend targets: Cloud Run, Render, Railway, Fly.io, or a VPS. Vercel Serverless is not ideal for this backend because the runtime depends on a large local song graph, TTS generation, and audio proxy streaming.
+For a larger graph, long-lived user memory, or heavy audio proxy traffic, move
+the backend to Cloud Run, Fly.io, Render, Railway, or a VPS with persistent
+storage and bandwidth controls.
 
 Required local data files are intentionally not committed:
 

@@ -1,6 +1,6 @@
 import { buildTalkVoiceProfile } from "./talk-voice.js";
 
-export function buildTrackContentPack({ track = {}, brief = {}, songContext = {}, artistContext = {}, broadcastContext = {}, previousTrack = null, nextTrack = null } = {}) {
+export function buildTrackContentPack({ track = {}, brief = {}, songContext = {}, artistContext = {}, trackResearch = {}, broadcastContext = {}, previousTrack = null, nextTrack = null } = {}) {
   return {
     songFacts: {
       title: cleanText(track.title || ""),
@@ -26,8 +26,17 @@ export function buildTrackContentPack({ track = {}, brief = {}, songContext = {}
       brief: cleanText(artistContext.brief || ""),
       facts: (artistContext.facts || []).map(cleanText).filter(Boolean).slice(0, 3)
     },
+    research: {
+      provider: cleanText(trackResearch.provider || ""),
+      audibleCues: (trackResearch.audibleCues || []).map(cleanText).filter(Boolean).slice(0, 5),
+      backgroundFacts: (trackResearch.backgroundFacts || []).map(cleanText).filter(Boolean).slice(0, 4),
+      listenerAngles: (trackResearch.listenerAngles || []).map(cleanText).filter(Boolean).slice(0, 4),
+      talkSeeds: (trackResearch.talkSeeds || []).map(cleanText).filter(Boolean).slice(0, 5),
+      sources: normalizeResearchSources(trackResearch.sources),
+      confidence: cleanText(trackResearch.confidence || "")
+    },
     editorial: {
-      city: cleanText(broadcastContext.city || brief.city || "北京"),
+      city: cleanText(broadcastContext.city || brief.city || ""),
       timeCue: cleanText(broadcastContext.timeCue || ""),
       localSceneSummary: cleanText(broadcastContext.localSceneSummary || ""),
       newsBriefs: briefTexts(broadcastContext.newsBriefs),
@@ -38,9 +47,20 @@ export function buildTrackContentPack({ track = {}, brief = {}, songContext = {}
   };
 }
 
+function normalizeResearchSources(items = []) {
+  return (items || [])
+    .map((item) => ({
+      title: cleanText(item?.title || ""),
+      url: cleanText(item?.url || "")
+    }))
+    .filter((item) => item.title || item.url)
+    .slice(0, 4);
+}
+
 export function buildShowTalkPlan({ brief = {}, packs = [] } = {}) {
   const voiceProfile = buildTalkVoiceProfile(brief);
   return {
+    format: brief.format || "",
     showThesis: buildShowThesis(brief),
     tone: "城市编辑型，但像朋友在旁边说话",
     voiceProfile,

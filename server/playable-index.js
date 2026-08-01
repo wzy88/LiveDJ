@@ -21,8 +21,12 @@ export function loadPlayableIndex() {
 
 export function savePlayableIndex(index = loadPlayableIndex()) {
   cache = index;
-  fs.mkdirSync(path.dirname(playablePath), { recursive: true });
-  atomicWriteJson(playablePath, { ...index, updatedAt: new Date().toISOString() });
+  try {
+    fs.mkdirSync(path.dirname(playablePath), { recursive: true });
+    atomicWriteJson(playablePath, { ...index, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    console.warn(`playable index could not be persisted: ${error.message}`);
+  }
 }
 
 export function getPlayableRecord(songId) {

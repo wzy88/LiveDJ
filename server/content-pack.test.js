@@ -37,6 +37,15 @@ test("content pack combines song facts, selection reason, story, and editorial c
       brief: "台湾创作女歌手，以清澈嗓音和民谣气质受到关注。",
       facts: ["作品常与旅行、城市和私人记忆有关。"]
     },
+    trackResearch: {
+      provider: "search-summary",
+      audibleCues: ["民谣吉他", "清澈人声"],
+      backgroundFacts: ["作品常被放在旅行和城市记忆语境里讨论"],
+      listenerAngles: ["适合路上和告别场景"],
+      talkSeeds: ["吉他和人声先把路上的空间留出来"],
+      sources: [{ title: "公开资料摘要", url: "https://example.com/song" }],
+      confidence: "search-summary"
+    },
     broadcastContext: {
       city: "北京",
       timeCue: "今晚",
@@ -55,6 +64,8 @@ test("content pack combines song facts, selection reason, story, and editorial c
   assert.match(pack.story.storySummary, /告别/);
   assert.equal(pack.story.commentExcerpts[0].text, "在北京西站，一个人拖着箱子听这首歌。");
   assert.match(pack.artist.brief, /清澈嗓音|民谣气质/);
+  assert.match(pack.research.audibleCues.join(" "), /民谣吉他|清澈人声/);
+  assert.match(pack.research.talkSeeds.join(" "), /吉他和人声/);
   assert.equal(pack.editorial.city, "北京");
   assert.match(pack.editorial.localSceneSummary, /地铁和环路/);
   assert.match(pack.transitionRole, /一半一半|海屿你|情绪|明亮/);

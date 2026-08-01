@@ -41,6 +41,24 @@ test("queue planner preserves explicit artist candidates at the front", () => {
   assert.match(planned[0].programReason, /点名|开场/);
 });
 
+test("queue planner uses office-energy slots for classic anti-sleep requests", () => {
+  const brief = buildProgramBrief("我想听经典老歌，给我推荐一些，最好节奏感强一点，不然下午办公会犯困。");
+  const planned = planRadioQueue({
+    candidates: [
+      makeSong("a", "情绪新歌", "歌手A", { moods: ["情绪"], scenes: ["夜晚"], genres: ["R&B"], score: 120 }),
+      makeSong("b", "海阔天空", "Beyond", { moods: ["明亮"], scenes: ["通勤", "学习工作"], genres: ["粤语", "摇滚"], score: 90, explicit: "经典老歌" }),
+      makeSong("c", "最炫民族风", "凤凰传奇", { moods: ["明亮"], scenes: ["日常陪伴"], genres: ["流行"], score: 82, explicit: "办公防困" }),
+      makeSong("d", "冬天里的一把火", "费翔", { moods: ["明亮"], scenes: ["日常陪伴"], genres: ["流行"], score: 78, explicit: "节奏感强" })
+    ],
+    brief,
+    limit: 3
+  });
+
+  assert.deepEqual(planned.map((track) => track.programSlot), ["energy-opener", "rhythm-lift", "familiar-hook"]);
+  assert.equal(planned[0].title, "海阔天空");
+  assert.match(planned[0].programReason, /经典老歌|办公|犯困|节奏/);
+});
+
 function makeSong(id, title, artist, { moods = [], scenes = [], genres = [], score = 50, story = false, explicit = false } = {}) {
   return {
     id,
@@ -52,7 +70,8 @@ function makeSong(id, title, artist, { moods = [], scenes = [], genres = [], sco
     genres: genres.map((value, index) => ({ value, weight: 10 - index })),
     evidence: [
       story ? "热评故事素材充足" : "",
-      explicit ? "这次点名想听李宗盛" : ""
+      explicit === true ? "这次点名想听李宗盛" : "",
+      typeof explicit === "string" ? `这次点名想听${explicit}` : ""
     ].filter(Boolean)
   };
 }

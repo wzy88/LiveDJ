@@ -7,6 +7,14 @@ const CITY_EDITORIAL_SLOTS = [
   { id: "closer", label: "收尾", reason: "给这期节目留出余味，不突然断掉" }
 ];
 
+const OFFICE_ENERGY_SLOTS = [
+  { id: "energy-opener", label: "提神开场", reason: "先用经典老歌和清楚节奏把下午办公的困意拉起来" },
+  { id: "rhythm-lift", label: "节奏抬升", reason: "继续保持节奏感，但不把声音做得太吵" },
+  { id: "familiar-hook", label: "熟悉副歌", reason: "用熟悉旋律和副歌记忆点维持注意力" },
+  { id: "work-flow", label: "办公续航", reason: "让后半段适合边工作边听，提神但不分心" },
+  { id: "closer", label: "收尾", reason: "把节奏收住，避免越听越累" }
+];
+
 export function planRadioQueue({ candidates = [], brief = {}, limit = 6 } = {}) {
   const pool = [...(candidates || [])].filter(Boolean);
   const planned = [];
@@ -29,11 +37,19 @@ export function planRadioQueue({ candidates = [], brief = {}, limit = 6 } = {}) 
 }
 
 function buildSlots(brief = {}, limit) {
+  if (isOfficeEnergyBrief(brief)) {
+    return buildSlotList(OFFICE_ENERGY_SLOTS, limit, { keepCloserWhenShort: false });
+  }
   const base = brief.format === "city-editorial" ? CITY_EDITORIAL_SLOTS : CITY_EDITORIAL_SLOTS.slice(0, 3);
+  return buildSlotList(base, limit);
+}
+
+function buildSlotList(base, limit, { keepCloserWhenShort = true } = {}) {
   if (limit <= base.length) {
     if (limit <= 1) return base.slice(0, 1);
     if (limit === 2) return [base[0], base[1]];
-    if (limit === 3) return [base[0], base[1], base[base.length - 1]];
+    if (limit === 3 && keepCloserWhenShort) return [base[0], base[1], base[base.length - 1]];
+    if (!keepCloserWhenShort) return base.slice(0, limit);
     return [...base.slice(0, limit - 1), base[base.length - 1]];
   }
   const result = [...base];
@@ -41,7 +57,7 @@ function buildSlots(brief = {}, limit) {
     result.push({
       id: `deep-${result.length - base.length + 1}`,
       label: "延展",
-      reason: "继续扩展这期节目的城市和故事线"
+      reason: keepCloserWhenShort ? "继续扩展这期节目的城市和故事线" : "继续保持办公时可用的节奏和熟悉度"
     });
   }
   return result;
@@ -64,6 +80,7 @@ function bestCandidateIndex(pool, slot, planned, brief) {
 function scoreCandidateForSlot(track, slot, planned, brief) {
   let score = Number(track.recommendScore) || 0;
   if (hasExplicitEvidence(track)) score += slot.id === "opener" ? 400 : 120;
+  if (isOfficeEnergyBrief(brief)) score += officeEnergyScore(track, slot);
   if (slot.id === "story") score += storyScore(track);
   if (slot.id === "city") score += cityScore(track, brief);
   if (slot.id === "turn") score += turnScore(track, planned);
@@ -78,9 +95,44 @@ function scoreCandidateForSlot(track, slot, planned, brief) {
 function buildProgramReason(track, slot, brief) {
   const parts = [slot.reason];
   if (hasExplicitEvidence(track)) parts.unshift("用户这次点名相关，优先放进节目");
+  if (isOfficeEnergyBrief(brief)) {
+    if (classicScore(track) > 0) parts.push("经典老歌的熟悉度适合办公时快速进入状态");
+    if (energyScore(track) > 0) parts.push("节奏感能应对下午犯困");
+    return parts.join("；");
+  }
   if (slot.id === "story" || storyScore(track) > 24) parts.push("它有可讲的评论/故事角度");
   if (slot.id === "city" || cityScore(track, brief) > 20) parts.push(`${brief.city || "城市"}语境能自然接上`);
   return parts.join("；");
+}
+
+function isOfficeEnergyBrief(brief = {}) {
+  return (brief.useCase || []).includes("办公防困") ||
+    (brief.musicTaste?.eras || []).includes("经典老歌") ||
+    (brief.musicTaste?.energy || []).includes("节奏感强");
+}
+
+function officeEnergyScore(track = {}, slot = {}) {
+  let score = classicScore(track) + energyScore(track);
+  if (slot.id === "energy-opener") score += classicScore(track) * 1.4 + energyScore(track);
+  if (slot.id === "rhythm-lift") score += energyScore(track) * 1.6;
+  if (slot.id === "familiar-hook") score += classicScore(track) * 1.3;
+  if (slot.id === "work-flow") score += /(学习工作|通勤|日常陪伴)/.test(valuesText(track)) ? 45 : 0;
+  if (slot.id === "closer") score += /(明亮|松弛|流行)/.test(valuesText(track)) ? 24 : 0;
+  if (/(情绪|失眠|伤感|安静)/.test(leadMood(track)) && slot.id !== "closer") score -= 60;
+  return score;
+}
+
+function classicScore(track = {}) {
+  const text = valuesText(track);
+  if (/(Beyond|凤凰传奇|费翔|叶蒨文|李克勤|郭富城|张国荣|刘德华|海阔天空|光辉岁月|最炫民族风|自由飞翔|冬天里的一把火|潇洒走一回|护花使者|对你爱不完|Monica)/.test(text)) return 90;
+  if ((track.evidence || []).some((item) => /经典老歌/.test(item))) return 70;
+  return 0;
+}
+
+function energyScore(track = {}) {
+  const text = valuesText(track);
+  if (/(明亮|摇滚|电子|节奏感|提神|办公防困|流行|粤语)/.test(`${text} ${(track.evidence || []).join(" ")}`)) return 70;
+  return 0;
 }
 
 function hasExplicitEvidence(track = {}) {

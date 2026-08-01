@@ -12,9 +12,10 @@ import { importPlaylistText, importPlaylistTracks, loadGraph, loadProfile, recom
 import { resolvePlayableTrack } from "./music.js";
 import { loadPlayableIndex, storePlayableRecord } from "./playable-index.js";
 import { buildRadioProgram } from "./radio-program.js";
-import { extractTracksFromPlaylistScreenshot, generateDialogueReplyWithLlm, getLlmStatus } from "./llm.js";
+import { extractTracksFromPlaylistScreenshot, generateDialogueReplyWithLlm, generateProgramReplyWithLlm, getLlmStatus } from "./llm.js";
 import { tracksFromPlaylistUrl } from "./playlist-import.js";
 import { proxyAudioRequest } from "./audio-proxy.js";
+import { fetchBeijingBroadcastContext } from "./broadcast-context.js";
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -23,10 +24,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const graphPath = path.join(rootDir, "data", "song-graph.json");
+const graphGzipPath = `${graphPath}.gz`;
 const ttsCache = new Map();
 let graphBootstrap = {
-  state: fs.existsSync(graphPath) ? "ready" : "missing",
-  message: fs.existsSync(graphPath) ? "song graph is available" : "song graph is not loaded yet",
+  state: fs.existsSync(graphPath) || fs.existsSync(graphGzipPath) ? "ready" : "missing",
+  message: fs.existsSync(graphPath) || fs.existsSync(graphGzipPath) ? "song graph is available" : "song graph is not loaded yet",
   updatedAt: new Date().toISOString()
 };
 const allowedOrigins = new Set(
@@ -251,6 +253,7 @@ app.get("/api/program", async (req, res) => {
 app.post("/api/dialogue", async (req, res) => {
   try {
     const profile = loadProfile();
+    const broadcastContext = await fetchBeijingBroadcastContext({ timeoutMs: 1800 });
     const summary = (() => {
       try {
         return summarizeProfile(profile, loadGraph());
@@ -263,7 +266,22 @@ app.post("/api/dialogue", async (req, res) => {
       query: req.body?.query || "",
       profile: { ...profile, ...summary },
       activeTrack: req.body?.activeTrack || null,
-      queue: Array.isArray(req.body?.queue) ? req.body.queue : []
+      queue: Array.isArray(req.body?.queue) ? req.body.queue : [],
+      broadcastContext
+    });
+    res.json(reply);
+  } catch (error) {
+    res.status(503).json({ error: error.message });
+  }
+});
+
+app.post("/api/program-reply", async (req, res) => {
+  try {
+    const reply = await generateProgramReplyWithLlm({
+      message: req.body?.message || "",
+      mode: req.body?.mode || "replace",
+      program: req.body?.program || {},
+      fallbackReply: req.body?.fallbackReply || ""
     });
     res.json(reply);
   } catch (error) {
@@ -345,42 +363,54 @@ function cleanSpeechText(value = "") {
     .slice(0, 220);
 }
 
-const server = app.listen(port, host, () => {
-  console.log(`Claudio Core listening at http://${host}:${port}`);
-  ensureRuntimeData().catch((error) => {
-    graphBootstrap = {
-      state: "error",
-      message: error.message,
-      updatedAt: new Date().toISOString()
-    };
-    console.warn(`song graph bootstrap failed: ${error.message}`);
-  });
-  setTimeout(() => {
-    warmGraphCache().catch((error) => {
+export async function bootstrapRuntimeData() {
+  await ensureRuntimeData();
+  await warmGraphCache();
+}
+
+function startServer() {
+  const server = app.listen(port, host, () => {
+    console.log(`Claudio Core listening at http://${host}:${port}`);
+    ensureRuntimeData().catch((error) => {
       graphBootstrap = {
         state: "error",
         message: error.message,
         updatedAt: new Date().toISOString()
       };
-      console.warn(`song graph warmup failed: ${error.message}`);
+      console.warn(`song graph bootstrap failed: ${error.message}`);
     });
-  }, 0);
-});
+    setTimeout(() => {
+      warmGraphCache().catch((error) => {
+        graphBootstrap = {
+          state: "error",
+          message: error.message,
+          updatedAt: new Date().toISOString()
+        };
+        console.warn(`song graph warmup failed: ${error.message}`);
+      });
+    }, 0);
+  });
 
-server.on("error", (error) => {
-  console.error(`Claudio Core server error: ${error.message}`);
-});
+  server.on("error", (error) => {
+    console.error(`Claudio Core server error: ${error.message}`);
+  });
 
-server.on("close", () => {
-  console.warn("Claudio Core server closed.");
-});
+  server.on("close", () => {
+    console.warn("Claudio Core server closed.");
+  });
 
-setInterval(() => {
-  // Keep the local dev server alive when launched from background scripts.
-}, 60_000);
+  setInterval(() => {
+    // Keep the local dev server alive when launched from background scripts.
+  }, 60_000);
+}
+
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isDirectRun) {
+  startServer();
+}
 
 async function ensureRuntimeData() {
-  if (fs.existsSync(graphPath)) {
+  if (fs.existsSync(graphPath) || fs.existsSync(graphGzipPath)) {
     graphBootstrap = {
       state: "ready",
       message: "song graph is available",
@@ -430,7 +460,7 @@ async function ensureRuntimeData() {
 }
 
 async function warmGraphCache() {
-  if (!fs.existsSync(graphPath)) return;
+  if (!fs.existsSync(graphPath) && !fs.existsSync(graphGzipPath)) return;
   graphBootstrap = {
     state: "loading",
     message: "warming song graph cache",
@@ -443,3 +473,5 @@ async function warmGraphCache() {
     updatedAt: new Date().toISOString()
   };
 }
+
+export default app;

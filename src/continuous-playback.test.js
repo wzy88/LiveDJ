@@ -42,55 +42,29 @@ test("talkover audio is prepared in the background without blocking music playba
   assert.doesNotMatch(main, /正在准备口播/);
 });
 
-test("music prompt does not prime audio before queue action is resolved", () => {
-  const submitBody = main.match(/async function handlePromptSubmit\(event\) \{[\s\S]*?\n  \}/)?.[0] || "";
-  assert.ok(submitBody, "handlePromptSubmit body should be present");
-  assert.doesNotMatch(submitBody, /primeAudioElement\(\)/);
+test("an explicit empty talk stage list preserves the program clock music-only window", () => {
+  assert.match(main, /const stages = Array\.isArray\(script\.stages\)\s*\? script\.stages\s*: buildFallbackTalkStages\(script, track\);/);
+  assert.doesNotMatch(main, /Array\.isArray\(script\.stages\) && script\.stages\.length/);
 });
 
-test("generated queue primes audio only for immediate replacement playback", () => {
-  const applyBody = main.match(/async function applyQueueRequest\(nextQuery, \{ mode = "replace" \} = \{\}\) \{[\s\S]*?\n  \}/)?.[0] || "";
-  assert.ok(applyBody, "applyQueueRequest body should be present");
-  assert.match(applyBody, /if \(!appendAfterCurrent\) \{\s*primeAudioElement\(\);\s*stopSpeechAndTimers\(\);\s*\}/);
+test("live dj only shows a line that is actually scheduled to play", () => {
+  assert.match(main, /const scheduledOpening = Array\.isArray\(track\.script\?\.stages\)\s*\? track\.script\.stages\[0\]\?\.text\s*: track\.script\?\.opening;/);
+  assert.match(main, /if \(scheduledOpening\) setDjLine\(scheduledOpening\);/);
+  assert.doesNotMatch(main, /setDjLine\(track\.script\?\.opening \|\| `正在播放/);
+});
+
+test("music prompt primes audio before async dialogue and starts generated queue through autoplay path", () => {
+  assert.match(main, /if \(fallbackIntent === "music"\) \{\s*primeAudioElement\(\);\s*\}/);
+  assert.ok(
+    main.indexOf('if (fallbackIntent === "music")') < main.indexOf('const intentProbe = await fetchJson("/api/dialogue"'),
+    "music prompt must prime audio before the first awaited request"
+  );
   assert.match(main, /if \(!appendAfterCurrent && nextQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, nextQueue\);\s*\}/);
 });
 
-test("silent audio priming does not mark the real player as playing", () => {
-  assert.match(main, /const audioPrimingRef = useRef\(false\);/);
-  assert.match(main, /audioPrimingRef\.current = true;\s*audioRef\.current\.src = silentUrlRef\.current;/);
-  assert.match(main, /if \(audioPrimingRef\.current\) \{\s*setIsPlaying\(false\);\s*return;\s*\}/);
-});
-
-test("queue generation can opt into autoplay after an explicit music request", () => {
-  assert.match(main, /async function loadRecommendations\(queryOverride = query, options = \{\}\)/);
-  assert.match(main, /if \(options\.autoStart && !options\.appendAfterCurrent && mergedQueue\.length\) \{\s*await continuePlaybackFromIndex\(0, mergedQueue\);\s*\}/);
-});
-
-test("definite music prompts skip stale dialogue probing before queue generation", () => {
-  const submitBody = main.match(/async function handlePromptSubmit\(event\) \{[\s\S]*?\n  \}/)?.[0] || "";
-  assert.ok(submitBody, "handlePromptSubmit body should be present");
-  assert.match(submitBody, /if \(isDefiniteMusicRequest\(nextQuery\)\) \{/);
-  assert.ok(
-    submitBody.indexOf("if (isDefiniteMusicRequest(nextQuery))") < submitBody.indexOf('fetchJson("/api/dialogue"'),
-    "definite music requests should generate a fresh queue before any dialogue reply can mention stale queue items"
-  );
-  assert.match(main, /function isDefiniteMusicRequest\(text = ""\)/);
-});
-
-test("playlist import updates taste profile without interrupting the active program", () => {
-  const importBody = main.match(/async function importPlaylist\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
-  assert.ok(importBody, "importPlaylist body should be present");
-  assert.doesNotMatch(importBody, /primeAudioElement\(\)/);
-  assert.doesNotMatch(importBody, /loadRecommendations\(/);
-  assert.doesNotMatch(main, /导入并重排|现在按你的歌单重排/);
-});
-
-test("playlist import closes the modal before waiting on network import", () => {
-  const importBody = main.match(/async function importPlaylist\(\) \{[\s\S]*?\n  \}/)?.[0] || "";
-  assert.ok(importBody, "importPlaylist body should be present");
-  assert.match(importBody, /const validationError = validatePlaylistImportInput/);
-  assert.ok(
-    importBody.indexOf("setIsImportPanelOpen(false);") < importBody.indexOf("await importPlaylist"),
-    "modal should close before the first awaited import request"
-  );
+test("music queue result reply is softened by the LLM before entering chat", () => {
+  assert.match(main, /async function buildNaturalProgramReply\(program, \{ mode, query, fallbackReply \}\)/);
+  assert.match(main, /const fallbackReply = buildProgramReadyReply\(program, \{ mode, query: nextQuery \}\);/);
+  assert.match(main, /const reply = await buildNaturalProgramReply\(program, \{\s*mode,\s*query: nextQuery,\s*fallbackReply\s*\}\);/);
+  assert.match(main, /fetchJson\("\/api\/program-reply", \{\s*method: "POST",\s*body: JSON\.stringify\(\{\s*message: query,\s*mode,\s*fallbackReply,/);
 });

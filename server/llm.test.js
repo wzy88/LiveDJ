@@ -4,7 +4,7 @@ import test from "node:test";
 process.env.LLM_API_KEY = process.env.LLM_API_KEY || "test-key";
 process.env.LLM_MODEL = process.env.LLM_MODEL || "test-model";
 
-const { generateDialogueReplyWithLlm, generateTalkScriptWithLlm } = await import("./llm.js");
+const { generateDialogueReplyWithLlm, generateProgramReplyWithLlm, generateTalkScriptWithLlm } = await import("./llm.js");
 const { buildTalkVoiceProfile } = await import("./talk-voice.js");
 
 test("dialogue reply falls back to concrete queue copy when LLM returns abstract radio wording", async () => {
@@ -93,6 +93,166 @@ test("dialogue reply never promises songs outside the prepared queue", async () 
   assert.doesNotMatch(result.reply, /成都|赵雷|我再加/);
 });
 
+test("dialogue reply passes local broadcast context for companion chat", async () => {
+  let capturedPayload = null;
+  globalThis.fetch = async (_url, options) => {
+    capturedPayload = JSON.parse(options.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  intent: "chat",
+                  reply: "可以，先不打断这首。北京现在少云、27 度，今天本地这几条我挑跟通勤和演出有关的讲。"
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const result = await generateDialogueReplyWithLlm({
+    message: "听着歌，顺便给我讲讲今天都有哪些本地新闻",
+    activeTrack: { title: "无尽幸福", artist: "凌晨一点的莱茵猫" },
+    broadcastContext: {
+      city: "北京",
+      timeCue: "下午",
+      weatherSummary: "北京现在 27°C，少云，风速约 8km/h",
+      newsBriefs: [{ text: "北京演出消费和商圈夜间活动继续升温。", source: "currents" }],
+      cultureBriefs: [{ text: "周中 Livehouse 和小剧场排期比较密。", source: "test-editorial" }],
+      editorialAngles: ["北京下午的写字楼和耳机"]
+    }
+  });
+
+  assert.equal(result.intent, "chat");
+  assert.equal(result.source, "llm");
+  assert.match(result.reply, /北京|少云|本地/);
+  assert.match(capturedPayload.messages[0].content, /本地天气|本地新闻|不要编造/);
+  assert.match(capturedPayload.messages[1].content, /broadcastContext/);
+  assert.match(capturedPayload.messages[1].content, /北京现在 27°C/);
+  assert.match(capturedPayload.messages[1].content, /演出消费/);
+});
+
+test("dialogue treats local news companion requests as chat even while music is playing", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                intent: "mixed",
+                reply: "可以，先不打断这首。《无尽幸福》继续放着；北京这会儿我先挑天气、通勤和演出消费这几条跟你讲。"
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const result = await generateDialogueReplyWithLlm({
+    message: "听着歌，顺便给我讲讲今天都有哪些本地新闻",
+    activeTrack: { title: "无尽幸福", artist: "凌晨一点的莱茵猫" },
+    queue: [{ title: "无尽幸福", artist: "凌晨一点的莱茵猫" }],
+    broadcastContext: {
+      city: "北京",
+      weatherSummary: "北京现在 27°C，少云",
+      newsBriefs: [{ text: "北京演出消费和商圈夜间活动继续升温。", source: "currents" }]
+    }
+  });
+
+  assert.equal(result.intent, "chat");
+  assert.match(result.reply, /本地新闻|北京|演出|天气|通勤/);
+  assert.doesNotMatch(result.reply, /排好了|先播/);
+});
+
+test("dialogue does not invent local news or promise unqueued songs during companion chat", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                intent: "chat",
+                reply: "北京今天下午有个大事：东城老胡同要改成文创街区。我顺手给你续一首《遇见》，孙燕姿的。"
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const result = await generateDialogueReplyWithLlm({
+    message: "听着歌，顺便给我讲讲今天都有哪些本地新闻",
+    activeTrack: { title: "无尽幸福", artist: "凌晨一点的莱茵猫" },
+    queue: [{ title: "无尽幸福", artist: "凌晨一点的莱茵猫" }],
+    broadcastContext: {
+      city: "北京",
+      weatherSummary: "北京现在 27°C，少云",
+      newsBriefs: [{ text: "城市更新和夜间消费的话题这两天还在被讨论", source: "test-editorial" }]
+    }
+  });
+
+  assert.equal(result.intent, "chat");
+  assert.equal(result.source, "rules");
+  assert.match(result.reply, /实时新闻源|北京现在 27°C|少云/);
+  assert.doesNotMatch(result.reply, /东城|文创街区|遇见|孙燕姿|续一首/);
+});
+
+test("program reply uses LLM to soften final queue results without hiding failures", async () => {
+  let capturedPayload = null;
+  globalThis.fetch = async (_url, options) => {
+    capturedPayload = JSON.parse(options.body);
+    return {
+      ok: true,
+      async json() {
+        return {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  reply: "经典老歌这轮我先不硬凑，凤凰传奇的音源没过可播验证；我先把《无尽幸福》接上，后面按北京这条线继续找更稳的。"
+                })
+              }
+            }
+          ]
+        };
+      }
+    };
+  };
+
+  const result = await generateProgramReplyWithLlm({
+    message: "有没有经典老歌 推荐一些、",
+    mode: "append",
+    fallbackReply: "当前这首我不打断，新的队列会从下一首开始。凤凰传奇这轮没有接上，主要是音源不可播或匹配不可靠。当前正在播《无尽幸福》-凌晨一点的莱茵猫，后面暂时没有稳定可播的新歌。",
+    program: {
+      brief: { city: "北京", scene: "通勤路上" },
+      rejected: [
+        { title: "最炫民族风", artist: "凤凰传奇", reason: "音源不可播或匹配不可靠" }
+      ],
+      visibleQueue: [
+        { title: "无尽幸福", artist: "凌晨一点的莱茵猫" }
+      ]
+    }
+  });
+
+  assert.equal(result.source, "llm");
+  assert.match(result.reply, /经典老歌|凤凰传奇|音源|无尽幸福/);
+  assert.doesNotMatch(result.reply, /匹配不可靠|新的队列会从下一首开始|当前正在播/);
+  assert.match(capturedPayload.messages[0].content, /不要像系统日志/);
+  assert.match(capturedPayload.messages[1].content, /fallbackReply/);
+});
+
 test("talk script sanitizer removes lyric quotes and raw public playlist names", async () => {
   globalThis.fetch = async () => ({
     ok: true,
@@ -147,6 +307,447 @@ test("talk script sanitizer removes lyric quotes and raw public playlist names",
   assert.doesNotMatch(joined, /温柔予你|旋律陷阱/);
   assert.doesNotMatch(joined, /从你导入的歌单里|你导入的歌单里/);
   assert.doesNotMatch(joined, /下一首[\s\S]{0,60}来自(?:你导入的|你的)歌单/);
+});
+
+test("talk script respects scene-first strategy without forcing title into opening", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "song_reason", "current_track"],
+                opening: "灯还亮着，先别急着跟今晚较劲。让声音在旁边铺开，手上的事一件一件来。",
+                bridges: [
+                  "Rollin' On 适合放在工作时听，不催人，只把桌面上散开的注意力慢慢拢回来。",
+                  "它的节奏像一个缓慢转起来的轮子，带一点松弛陪伴，先把最容易开始的那一块往前挪。"
+                ],
+                nextTease: "下一首会把夜色点亮一点，不是突然热闹，只是让房间里多一点空气。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    context: {
+      query: "我现在在加班，播点音乐",
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "answer_why_this_song_now",
+        userKeywords: {
+          scene: ["加班", "工作"],
+          mood: ["松弛"]
+        },
+        currentTrack: {
+          title: "Rollin' On",
+          artist: "椅子乐团",
+          selectionReason: "工作时需要松弛陪伴"
+        }
+      }
+    },
+    fallbackScript: {
+      opening: "先把肩膀松一点。",
+      bridges: ["这首歌放在旁边，不催人。"],
+      nextTease: "后面换一点夜色。",
+      closing: ""
+    }
+  });
+
+  assert.ok(script);
+  assert.equal(script.opening, "灯还亮着，先别急着跟今晚较劲。让声音在旁边铺开，手上的事一件一件来。");
+  assert.doesNotMatch(script.opening, /Rollin' On|椅子乐团|《/);
+  assert.match(script.lines.join("\n"), /Rollin' On/);
+});
+
+test("talk script rejects over-explained scene-first music matching", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track", "song_research"],
+                opening: "下午骑行到中段，身体已经热开，这首歌把节奏托住。",
+                bridges: [
+                  "低频和人声放得很近，R&B的律动不催你踏频，只帮你稳住踩踏频率。",
+                  "节奏不抢注意力，适合把注意力留给路况和呼吸，让音乐铺一层底色。"
+                ],
+                nextTease: "下一首节奏会继续托住踏频。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "罗生门（Follow）",
+      artist: "梨冻紧",
+      scenes: [{ value: "骑行" }],
+      moods: [{ value: "明亮" }],
+      genres: [{ value: "R&B" }]
+    },
+    context: {
+      query: "我在骑自行车，来点音乐，今天的目标是30Km。",
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      },
+      brief: {
+        format: "personal-companion",
+        scene: "骑行",
+        contentTaste: []
+      }
+    },
+    fallbackScript: {
+      opening: "先别急着冲。",
+      bridges: ["肩膀松一点。", "注意路口。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /scene_first_overexplained/);
+});
+
+test("talk script rejects generic scene collages built from stock companion imagery", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene"],
+                opening: "手机又亮了一下，窗外的风还在吹，桌边那盏灯没有关。",
+                bridges: [
+                  "先把今天按下暂停，让屏幕暗一点，再给自己一次重启的机会。",
+                  "不用急着翻篇，等房间安静下来，呼吸也会慢一点。"
+                ],
+                nextTease: "后面的声音会继续陪你把夜晚放轻。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    context: {
+      query: "我现在在加班，播点音乐",
+      brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      }
+    },
+    fallbackScript: {
+      opening: "先从手边最小的一件事开始。",
+      bridges: ["回完最短的那条消息。"],
+      nextTease: "后面的歌继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /generic_scene_collage/);
+});
+
+test("talk script rejects audible details that are absent from supplied research", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "song_research",
+                usedMaterials: ["current_track", "song_research"],
+                opening: "这首先留在旁边，不需要把注意力从工作上拿走。",
+                bridges: [
+                  "前奏里的钢琴很快退到后面，副歌突然加进鼓点，女声还带着明显的气声。",
+                  "这些声音让桌前这一段不至于太闷。"
+                ],
+                nextTease: "下一首会把速度稍微抬高。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "未知歌曲",
+      artist: "未知歌手",
+      scenes: [{ value: "工作" }],
+      moods: [{ value: "松弛" }]
+    },
+    context: {
+      query: "工作时听点不吵的歌",
+      brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      },
+      contentPack: { research: {} }
+    },
+    fallbackScript: {
+      opening: "先把歌放在旁边。",
+      bridges: ["不用分神听。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /unsupported_audible_detail/);
+});
+
+test("talk script rejects fictional shared memories with the listener", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track"],
+                opening: "我记得上次陪你加班时，你也是把手机扣在桌边，等这首歌播完才起身。",
+                bridges: [
+                  "我们以前总在这个时候听点轻的，今天也照旧。",
+                  "先把眼前这一件事处理掉。"
+                ],
+                nextTease: "下一首继续留在旁边。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "Rollin' On",
+      artist: "椅子乐团"
+    },
+    context: {
+      query: "我现在在加班，播点音乐",
+      brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      }
+    },
+    fallbackScript: {
+      opening: "先把眼前这一件事处理掉。",
+      bridges: ["歌放在旁边就好。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /invented_shared_memory/);
+});
+
+test("talk script rejects subtle scene-first song-fit proof lines", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track", "song_research"],
+                opening: "骑开以后，腿开始适应这个节奏了，先别急着看平均速度。",
+                bridges: [
+                  "低频铺得很浅，不抢注意力，路口和车流还能放在前面。",
+                  "30公里的目标不是靠蛮力，是靠这种节奏把状态托住。"
+                ],
+                nextTease: "下一首会自然接上。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "海屿你",
+      artist: "马也_Crabbit",
+      scenes: [{ value: "骑行" }],
+      moods: [{ value: "明亮" }]
+    },
+    context: {
+      query: "我在骑自行车，来点音乐，今天的目标是30Km。",
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      },
+      brief: {
+        format: "personal-companion",
+        scene: "骑行",
+        contentTaste: []
+      }
+    },
+    fallbackScript: {
+      opening: "先别急着冲。",
+      bridges: ["肩膀松一点。", "注意路口。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /proofy_scene_line|too_many_match_terms/);
+});
+
+test("talk script rejects cycling scene lines that turn audio texture into fit rationale", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track", "song_research", "next_track"],
+                opening: "骑到这会儿，腿已经记住了踏板的节奏。",
+                bridges: [
+                  "这首的明亮音色刚好把这会儿的暗补了一点，不用加速，保持踏频，让轮子一圈一圈走。"
+                ],
+                nextTease: "下一首会把节奏再放慢半档，适合接下来那段平路。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "旅行的意义",
+      artist: "陈绮贞",
+      scenes: [{ value: "骑行" }],
+      moods: [{ value: "明亮" }]
+    },
+    context: {
+      query: "我在骑自行车，来点音乐，今天的目标是30Km。",
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      },
+      brief: {
+        format: "personal-companion",
+        scene: "骑行",
+        contentTaste: []
+      }
+    },
+    fallbackScript: {
+      opening: "先别急着冲。",
+      bridges: ["肩膀松一点。", "注意路口。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /cycling_song_fit_line/);
+});
+
+test("talk script rejects cycling next tease that maps song structure to route effort", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track", "next_track"],
+                opening: "骑到这会儿，身体已经热开了，先看眼前这一段路。",
+                bridges: [
+                  "别急着算还剩多少，肩膀放松一点，过了下一个路口再说。"
+                ],
+                nextTease: "这首歌的尾奏像一段缓坡，滑过去之后，下一首声音铺得更满，刚好让你不用再想配速。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "旅行的意义",
+      artist: "陈绮贞",
+      scenes: [{ value: "骑行" }],
+      moods: [{ value: "明亮" }]
+    },
+    context: {
+      query: "我在骑自行车，来点音乐，今天的目标是30Km。",
+      talkBrief: {
+        talkStrategy: "scene_first",
+        programFunction: "companion_scene_progression"
+      },
+      brief: {
+        format: "personal-companion",
+        scene: "骑行",
+        contentTaste: []
+      }
+    },
+    fallbackScript: {
+      opening: "先别急着冲。",
+      bridges: ["肩膀松一点。"],
+      nextTease: "后面继续。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /cycling_song_fit_line/);
 });
 
 test("talk script sanitizer does not project direct import evidence onto next track", async () => {
@@ -958,6 +1559,11 @@ test("talk script prompt passes structured editorial context for richer radio sc
   assert.deepEqual(userPayload.broadcastContext.newsBriefs, ["城市更新和夜间消费的话题这两天还在被讨论"]);
   assert.deepEqual(userPayload.broadcastContext.cultureBriefs, ["Livehouse和展览把周中的北京抬亮一点"]);
   assert.match(systemPrompt, /editorial|资讯|城市|不要编造/);
+  assert.match(systemPrompt, /写作方法|用户此刻|动作|环境|只轻轻点一下歌曲|差：|好：/);
+  assert.match(systemPrompt, /每首歌要承担不同的陪伴功能|起步|进入状态|换一口气|稍微提亮|收住/);
+  assert.match(systemPrompt, /companion_scene_progression|陪用户经历这个时刻|不要连续写节奏、低频、踏频、注意力、托住/);
+  assert.match(systemPrompt, /场景只定底色|口播要有留白/);
+  assert.match(systemPrompt, /身体状态|动作场景|声音感受|播放器界面已经显示歌名和歌手|不用承担报幕职责|不要用歌名歌手当句子的主语/);
 });
 
 test("talk script prompt passes show talk plan and content pack for city-editorial programs", async () => {
@@ -1034,6 +1640,14 @@ test("talk script prompt passes show talk plan and content pack for city-editori
           brief: "台湾创作女歌手，以清澈嗓音和民谣气质受到关注。",
           facts: ["作品常与旅行、城市和私人记忆有关。"]
         },
+        research: {
+          audibleCues: ["民谣吉他", "清澈人声"],
+          backgroundFacts: ["作品常被放在旅行和城市记忆语境里讨论"],
+          listenerAngles: ["适合路上和告别场景"],
+          talkSeeds: ["吉他和人声先把路上的空间留出来"],
+          sources: [{ title: "公开资料摘要", url: "https://example.com/song" }],
+          confidence: "search-summary"
+        },
         editorial: {
           city: "北京",
           localSceneSummary: "北京今晚的通勤尾声还挂在地铁和环路上。",
@@ -1061,6 +1675,165 @@ test("talk script prompt passes show talk plan and content pack for city-editori
   assert.match(userPayload.contentPack.selectionReason, /热评|故事/);
   assert.equal(userPayload.contentPack.story.commentExcerpts[0].text, "在北京西站，一个人拖着箱子听这首歌。");
   assert.match(userPayload.contentPack.artist.brief, /清澈嗓音|民谣气质/);
+  assert.match(userPayload.contentPack.research.audibleCues.join(" "), /民谣吉他|清澈人声/);
+  assert.match(userPayload.contentPack.research.talkSeeds.join(" "), /吉他和人声/);
   assert.match(systemPrompt, /showTalkPlan|contentPack|节目/);
   assert.match(systemPrompt, /voiceProfile|城市音乐编辑|朋友低声/);
+});
+
+test("talk script rejects LLM copy that does not use user need and supplied material", async () => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["current_track"],
+                opening: "《最炫民族风》和凤凰传奇先放在这里，熟悉的旋律会让这一段变得热闹一点。",
+                bridges: [
+                  "这首歌不用解释太多，大家都知道它能把气氛带起来。",
+                  "后面继续顺着这个感觉走。"
+                ],
+                nextTease: "下一首接到《自由飞翔》，节奏会自然往前走。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      };
+    }
+  });
+
+  const script = await generateTalkScriptWithLlm({
+    track: {
+      title: "最炫民族风",
+      artist: "凤凰传奇",
+      scenes: [{ value: "开车" }],
+      moods: [{ value: "提神" }],
+      evidence: ["这次点名想听：凤凰传奇"]
+    },
+    context: {
+      query: "凤凰传奇，开车，北京，犯困。口播里可以带天气新闻娱乐八卦、轻松陪伴、评论热评和创作背景。",
+      nextTrack: {
+        title: "自由飞翔",
+        artist: "凤凰传奇"
+      },
+      talkBrief: {
+        programFunction: "answer_why_this_song_now",
+        primaryAngle: "user_scene",
+        requiredMaterials: ["user_scene", "song_reason", "current_track", "concrete_material"],
+        userKeywords: {
+          artists: ["凤凰传奇"],
+          city: ["北京"],
+          scene: ["开车"],
+          mood: ["犯困", "提神"],
+          content: ["热评", "新闻"]
+        },
+        currentTrack: {
+          title: "最炫民族风",
+          artist: "凤凰传奇",
+          selectionReason: "用户点名凤凰传奇，并且需要开车犯困时提神"
+        },
+        materials: {
+          story: "评论里有一句：一听这个前奏，方向盘都想跟着打拍子。",
+          cityEditorial: "北京今晚少云，风不大。新闻/资讯：城市夜生活和演出消费还在被讨论。"
+        },
+        mustMention: ["凤凰传奇", "北京", "开车", "犯困", "最炫民族风"],
+        qualityGate: [
+          "必须回答为什么此刻放这首歌",
+          "必须使用用户诉求、当前歌曲和至少一个具体素材，否则拒稿"
+        ]
+      },
+      songContext: {
+        provider: "test",
+        commentExcerpts: [{ text: "一听这个前奏，方向盘都想跟着打拍子。", theme: "开车/提神" }],
+        storySummary: "评论里常见的是开车提神和国民旋律带来的集体记忆。"
+      },
+      broadcastContext: {
+        city: "北京",
+        timeCue: "今晚",
+        weatherSummary: "北京今晚少云，风不大。",
+        newsBriefs: ["城市夜生活和演出消费还在被讨论。"]
+      }
+    },
+    fallbackScript: {
+      opening: "《最炫民族风》先放在这里。",
+      bridges: ["先把开车犯困这件事说清楚。"],
+      nextTease: "后面接到《自由飞翔》。"
+    }
+  });
+
+  assert.equal(script.rejected, true);
+  assert.match(script.reason, /material_gate/);
+});
+
+test("talk script prompt carries the program clock writing role", async () => {
+  const originalFetch = globalThis.fetch;
+  let userPayload = null;
+  globalThis.fetch = async (url, options = {}) => {
+    const payload = JSON.parse(options.body || "{}");
+    userPayload = JSON.parse(payload.messages?.[1]?.content || "{}");
+    return {
+      ok: true,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                angle: "user_scene",
+                usedMaterials: ["user_scene", "current_track"],
+                opening: "刚才说先做最小的一件事，现在已经过了几首，手上的节奏可以继续留在这里。",
+                bridges: ["不用重新加速，先把眼前这一行处理完。"],
+                nextTease: "后面会轻一点换过去，思路不用重新开始。",
+                closing: ""
+              })
+            }
+          }
+        ]
+      })
+    };
+  };
+
+  try {
+    await generateTalkScriptWithLlm({
+      track: {
+        title: "Rollin' On",
+        artist: "椅子乐团",
+        scenes: [{ value: "工作" }],
+        moods: [{ value: "松弛" }]
+      },
+      context: {
+        query: "我现在在加班，播点音乐",
+        queueIndex: 2,
+        brief: { format: "personal-companion", scene: "工作学习", contentTaste: [] },
+        talkBrief: {
+          purpose: "节目中段串联口播",
+          programFunction: "companion_scene_progression",
+          talkStrategy: "scene_first",
+          writingTask: "陪用户经历这个时刻。",
+          programClock: {
+            role: "callback",
+            label: "前文回声",
+            playedFields: ["opening"],
+            writingInstruction: "承认时间已经过去，呼应前面说过的动作、状态或环境，让听众感到你记得。"
+          }
+        }
+      },
+      fallbackScript: {
+        opening: "刚才的动作继续做下去。",
+        bridges: ["先看眼前这一行。"],
+        nextTease: "后面继续。"
+      }
+    });
+
+    assert.equal(userPayload.talkBrief.programClock.role, "callback");
+    assert.equal(userPayload.talkBrief.programClock.label, "前文回声");
+    assert.deepEqual(userPayload.talkBrief.programClock.playedFields, ["opening"]);
+    assert.match(userPayload.talkBrief.programClock.writingInstruction, /呼应|记得/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

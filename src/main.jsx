@@ -2,13 +2,18 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { buildDefaultRadioQuery } from "./default-query.js";
-import { buildImportStatus, buildImportSummary } from "./import-summary.js";
-import { mergeQueueAfterCurrent, mergeQueueAtTail, resolveQueueRequestAction } from "./queue-behavior.js";
+import { mergeQueueAfterCurrent, mergeQueueAtTail, resolveQueueRequestAction, shouldQueueAfterCurrent } from "./queue-behavior.js";
 import { buildProgramReadyReply } from "./program-reply.js";
 
 const apiBase = import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? "http://127.0.0.1:8787" : "");
 const liveDjPageChars = 96;
 const initialRadioQuery = buildDefaultRadioQuery();
+const talkoverVoicePreset = {
+  voice: "zh-CN-XiaoyiNeural",
+  rate: "-12%",
+  pitch: "-2Hz",
+  volume: "+0%"
+};
 
 function App() {
   const [graphStats, setGraphStats] = useState(null);
@@ -39,6 +44,7 @@ function App() {
   const [dialogueMessages, setDialogueMessages] = useState([
     { id: "dj-initial", role: "dj", text: "把你的想法丢给我，我来接歌。" }
   ]);
+  const [pendingQueueRequest, setPendingQueueRequest] = useState(null);
 
   const audioRef = useRef(null);
   const voiceRef = useRef(null);
@@ -47,7 +53,6 @@ function App() {
   const talkTimersRef = useRef([]);
   const speechAudioCacheRef = useRef(new Map());
   const silentUrlRef = useRef("");
-  const audioPrimingRef = useRef(false);
   const programPromiseRef = useRef(null);
   const backfillPromiseRef = useRef(null);
   const queueMutationSeqRef = useRef(0);
@@ -106,10 +111,6 @@ function App() {
     const audio = audioRef.current;
     if (!audio) return undefined;
     const sync = () => {
-      if (audioPrimingRef.current) {
-        setIsPlaying(false);
-        return;
-      }
       setIsPlaying(Boolean(!audio.paused && !audio.ended));
     };
     audio.addEventListener("play", sync);
@@ -143,23 +144,21 @@ function App() {
     setLlmStatus(health?.llm || null);
     setGraphStats(stats);
     setProfile(profileResult);
-    if (stats?.error) {
-      setStatus("还没有歌曲图谱，请先运行 npm run graph:build。");
+    if (!Number.isFinite(stats?.songCount)) {
+      const reason = stats?.error || "后端没有返回歌曲图谱";
+      setStatus(`电台服务暂时不可用：${reason}。请稍后刷新。`);
       return;
     }
     setStatus(`已加载 ${stats.songCount.toLocaleString()} 首歌曲画像。`);
-    await loadRecommendations();
+    try {
+      await loadRecommendations();
+    } catch (error) {
+      setStatus(`电台服务暂时不可用：${error.message}。请稍后刷新。`);
+    }
   }
 
   async function importPlaylist() {
-    const validationError = validatePlaylistImportInput();
-    if (validationError) {
-      setStatus(validationError);
-      return;
-    }
-
     setIsImporting(true);
-    setIsImportPanelOpen(false);
     setStatus("正在把你的歌单映射到歌曲图谱...");
     try {
       const result = importMode === "screenshot"
@@ -171,7 +170,9 @@ function App() {
       setProfile(result);
       appendDialogueMessage("user", importMode === "screenshot" ? "上传了一张歌单截图" : importMode === "text" ? "粘贴了一段歌单文字" : "导入了一个歌单链接");
       appendDialogueMessage("dj", buildImportSummary(result, extractedCount));
-      setStatus(buildImportStatus(result, extractedCount));
+      setStatus(`导入 ${extractedCount} 首，图谱匹配 ${result.matchedCount} 首；我会用这些口味信号找稳定可播的队列。`);
+      await loadRecommendations("根据我刚导入的歌单，排一段最贴近我口味的电台", { appendDjResponse: true });
+      setIsImportPanelOpen(false);
     } catch (error) {
       setStatus(`歌单导入失败：${error.message}`);
       appendDialogueMessage("dj", `歌单导入失败：${error.message}`);
@@ -320,9 +321,6 @@ function App() {
       if (!options.silent && !options.appendAfterCurrent) {
         setStatus(incomingQueue.length ? `可播队列已生成：${incomingQueue.length} 首可直接播放。` : "这次候选都没有通过可播验证，请换个状态词再试。");
       }
-      if (options.autoStart && !options.appendAfterCurrent && mergedQueue.length) {
-        await continuePlaybackFromIndex(0, mergedQueue);
-      }
       return visibleProgram;
     } finally {
       if (!options.silent) {
@@ -427,7 +425,10 @@ function App() {
     setCurrentIndex(safeIndex);
     setActiveTrack(track);
     setResolvedTrack(track.resolvedTrack);
-    setDjLine(track.script?.opening || `正在播放《${track.title}》。`);
+    const scheduledOpening = Array.isArray(track.script?.stages)
+      ? track.script.stages[0]?.text
+      : track.script?.opening;
+    if (scheduledOpening) setDjLine(scheduledOpening);
     setStatus(`正在播放：${track.title} - ${track.artist}`);
     const audio = audioRef.current;
     if (audio) {
@@ -435,7 +436,6 @@ function App() {
       audio.load();
       audio.loop = false;
       audio.muted = false;
-      audioPrimingRef.current = false;
       audio.preload = "auto";
       audio.volume = musicVolume;
       try {
@@ -518,7 +518,6 @@ function App() {
     if (!silentUrlRef.current) {
       silentUrlRef.current = createSilentWavUrl();
     }
-    audioPrimingRef.current = true;
     audioRef.current.src = silentUrlRef.current;
     audioRef.current.muted = true;
     audioRef.current.loop = true;
@@ -590,7 +589,7 @@ function App() {
     if (scheduledTalkTrackIdRef.current === track.id) return;
     scheduledTalkTrackIdRef.current = track.id;
     const durationMs = Math.max(120000, Math.round((track.resolvedTrack?.durationSec || track.durationSec || 220) * 1000));
-    const stages = Array.isArray(script.stages) && script.stages.length
+    const stages = Array.isArray(script.stages)
       ? script.stages
       : buildFallbackTalkStages(script, track);
     stages.forEach((stage) => {
@@ -723,10 +722,7 @@ function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         text: clean,
-        voice: "zh-CN-XiaoxiaoNeural",
-        rate: "-10%",
-        pitch: "+6Hz",
-        volume: "+0%"
+        ...talkoverVoicePreset
       })
     }).then(async (response) => {
       if (!response.ok) {
@@ -796,10 +792,6 @@ function App() {
   }
 
   function handleNativeAudioPlay() {
-    if (audioPrimingRef.current) {
-      setIsPlaying(false);
-      return;
-    }
     setIsPlaying(true);
     if (!activeTrack?.resolvedTrack) return;
     scheduleTalkover(activeTrack);
@@ -813,14 +805,8 @@ function App() {
     appendDialogueMessage("user", nextQuery);
     setPromptText("");
     const fallbackIntent = /想听|放|播|来点|换歌|歌单|华语|粤语|下班|通勤|睡觉|失眠|emo|松弛/i.test(nextQuery) ? "music" : "chat";
-    if (isDefiniteMusicRequest(nextQuery)) {
-      const queueAction = resolveQueueRequestAction(nextQuery, {
-        hasActiveTrack: Boolean(activeTrack)
-      });
-      await applyQueueRequest(nextQuery, {
-        mode: queueAction === "append" ? "append" : "replace"
-      });
-      return;
+    if (fallbackIntent === "music") {
+      primeAudioElement();
     }
     const intentProbe = await fetchJson("/api/dialogue", {
       method: "POST",
@@ -847,6 +833,18 @@ function App() {
     const queueAction = resolveQueueRequestAction(nextQuery, {
       hasActiveTrack: Boolean(activeTrack)
     });
+    if (queueAction === "ask") {
+      const pending = {
+        id: `pending-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        query: nextQuery
+      };
+      setPendingQueueRequest(pending);
+      appendDialogueMessage("dj", `我听懂了，你想接一段新的方向。要现在切过去，还是等《${activeTrack?.title || "当前这首"}》播完再接上？`, {
+        actionPromptId: pending.id
+      });
+      setStatus("等待你选择：立即切换，或播完当前这首再接上。");
+      return;
+    }
     await applyQueueRequest(nextQuery, {
       mode: queueAction === "append" ? "append" : "replace"
     });
@@ -868,12 +866,42 @@ function App() {
       appendAfterCurrent
     });
     const nextQueue = program?.visibleQueue || program?.queue || [];
-    const reply = buildProgramReadyReply(program, { mode, query: nextQuery });
+    const fallbackReply = buildProgramReadyReply(program, { mode, query: nextQuery });
+    const reply = await buildNaturalProgramReply(program, {
+      mode,
+      query: nextQuery,
+      fallbackReply
+    });
     appendDialogueMessage("dj", reply);
     setDjLine(reply);
     if (!appendAfterCurrent && nextQueue.length) {
       await continuePlaybackFromIndex(0, nextQueue);
     }
+  }
+
+  async function buildNaturalProgramReply(program, { mode, query, fallbackReply }) {
+    try {
+      const result = await fetchJson("/api/program-reply", {
+        method: "POST",
+        body: JSON.stringify({
+          message: query,
+          mode,
+          fallbackReply,
+          program
+        })
+      });
+      return result?.reply || fallbackReply;
+    } catch {
+      return fallbackReply;
+    }
+  }
+
+  async function resolvePendingQueueRequest(mode) {
+    if (!pendingQueueRequest?.query) return;
+    const pending = pendingQueueRequest;
+    setPendingQueueRequest(null);
+    appendDialogueMessage("user", mode === "append" ? "播完这首再接上" : "现在切过去");
+    await applyQueueRequest(pending.query, { mode });
   }
 
   function appendDialogueMessage(role, text, meta = {}) {
@@ -1134,6 +1162,12 @@ function App() {
                       {message.role === "dj" ? <div className="messageAvatar">C</div> : null}
                       <div className={message.role === "user" ? "messageBubble userMessageBubble" : "messageBubble"}>
                         <p>{message.text}</p>
+                        {message.actionPromptId && pendingQueueRequest?.id === message.actionPromptId ? (
+                          <div className="messageActions">
+                            <button type="button" onClick={() => resolvePendingQueueRequest("replace")}>立即切换</button>
+                            <button type="button" onClick={() => resolvePendingQueueRequest("append")}>播完再接</button>
+                          </div>
+                        ) : null}
                       </div>
                       {message.role === "user" ? <div className="messageAvatar userAvatar">我</div> : null}
                     </div>
@@ -1200,7 +1234,7 @@ function App() {
             <div className="modalActions">
               <button type="button" onClick={() => setIsImportPanelOpen(false)}>取消</button>
               <button type="button" className="primaryAction" onClick={importPlaylist} disabled={isImporting}>
-                {isImporting ? "导入中" : "导入"}
+                {isImporting ? "导入中" : "导入并重排"}
               </button>
             </div>
             <pre>{profileText}</pre>
@@ -1232,13 +1266,11 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
-function isDefiniteMusicRequest(text = "") {
-  const clean = String(text || "").trim();
-  if (!clean) return false;
-  if (/[?？]/.test(clean) || /是不是|听不懂|为什么|怎么|干嘛|介绍|你会|你能/.test(clean)) return false;
-  if (/(想听|放|播放|播|来点|来一首|换歌|接几首|排.*歌|歌单|音乐|歌曲|歌手)/i.test(clean)) return true;
-  if (/^(?:[\u3400-\u9fffA-Za-z0-9·.'’&\-\s]{2,18})$/.test(clean)) return true;
-  return false;
+function buildImportSummary(result, extractedCount) {
+  const unmatchedCount = Math.max(0, (result.importedCount || extractedCount || 0) - (result.matchedCount || 0));
+  const playableText = result.resolvedCount ? `，其中 ${result.resolvedCount} 首已经确认可播` : "";
+  const unmatchedText = unmatchedCount ? `；还有 ${unmatchedCount} 首没匹配上，我会先用相近口味补队列` : "";
+  return `我读到了 ${extractedCount} 首，图谱匹配到 ${result.matchedCount || 0} 首${playableText}${unmatchedText}。现在按你的歌单重排。`;
 }
 
 function splitTalkPages(text, maxChars) {
