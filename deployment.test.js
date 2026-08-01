@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-const apiFunctionUrl = new URL("./api/[...path].js", import.meta.url);
+const apiFunctionUrl = new URL("./api/index.js", import.meta.url);
 const pagesWorkflowUrl = new URL("./.github/workflows/deploy-pages.yml", import.meta.url);
 const renderConfigUrl = new URL("./render.yaml", import.meta.url);
 const vercelConfigUrl = new URL("./vercel.json", import.meta.url);
@@ -18,14 +18,19 @@ test("Render blueprint defines a free Node web service", () => {
 });
 
 test("Vercel serves API requests from the in-repo Express function", () => {
-  assert.equal(existsSync(apiFunctionUrl), true, "api/[...path].js should exist");
+  assert.equal(existsSync(apiFunctionUrl), true, "api/index.js should exist");
   const source = readFileSync(apiFunctionUrl, "utf8");
   assert.match(source, /from "\.\.\/server\/index\.js"/);
   assert.match(source, /app\(req, res\)/);
 
   const config = JSON.parse(readFileSync(vercelConfigUrl, "utf8"));
-  assert.equal(config.functions?.["api/[...path].js"]?.maxDuration, 300);
-  assert.deepEqual(config.rewrites || [], []);
+  assert.equal(config.functions?.["api/index.js"]?.maxDuration, 300);
+  assert.deepEqual(config.rewrites, [
+    {
+      source: "/api/:path*",
+      destination: "/api?__path=:path*"
+    }
+  ]);
   assert.doesNotMatch(JSON.stringify(config), /railway\.app|onrender\.com/i);
 });
 

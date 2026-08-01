@@ -36,7 +36,7 @@ npm start
 
 ### Vercel Hobby
 
-The committed `api/[...path].js` imports the Express app as a Vercel Function.
+The committed `api/index.js` imports the Express app as a Vercel Function.
 The service reads the committed `data/song-graph.json.gz`, so no separate graph
 upload is required for the current lite graph.
 
