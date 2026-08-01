@@ -363,39 +363,51 @@ function cleanSpeechText(value = "") {
     .slice(0, 220);
 }
 
-const server = app.listen(port, host, () => {
-  console.log(`Claudio Core listening at http://${host}:${port}`);
-  ensureRuntimeData().catch((error) => {
-    graphBootstrap = {
-      state: "error",
-      message: error.message,
-      updatedAt: new Date().toISOString()
-    };
-    console.warn(`song graph bootstrap failed: ${error.message}`);
-  });
-  setTimeout(() => {
-    warmGraphCache().catch((error) => {
+export async function bootstrapRuntimeData() {
+  await ensureRuntimeData();
+  await warmGraphCache();
+}
+
+function startServer() {
+  const server = app.listen(port, host, () => {
+    console.log(`Claudio Core listening at http://${host}:${port}`);
+    ensureRuntimeData().catch((error) => {
       graphBootstrap = {
         state: "error",
         message: error.message,
         updatedAt: new Date().toISOString()
       };
-      console.warn(`song graph warmup failed: ${error.message}`);
+      console.warn(`song graph bootstrap failed: ${error.message}`);
     });
-  }, 0);
-});
+    setTimeout(() => {
+      warmGraphCache().catch((error) => {
+        graphBootstrap = {
+          state: "error",
+          message: error.message,
+          updatedAt: new Date().toISOString()
+        };
+        console.warn(`song graph warmup failed: ${error.message}`);
+      });
+    }, 0);
+  });
 
-server.on("error", (error) => {
-  console.error(`Claudio Core server error: ${error.message}`);
-});
+  server.on("error", (error) => {
+    console.error(`Claudio Core server error: ${error.message}`);
+  });
 
-server.on("close", () => {
-  console.warn("Claudio Core server closed.");
-});
+  server.on("close", () => {
+    console.warn("Claudio Core server closed.");
+  });
 
-setInterval(() => {
-  // Keep the local dev server alive when launched from background scripts.
-}, 60_000);
+  setInterval(() => {
+    // Keep the local dev server alive when launched from background scripts.
+  }, 60_000);
+}
+
+const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+if (isDirectRun) {
+  startServer();
+}
 
 async function ensureRuntimeData() {
   if (fs.existsSync(graphPath) || fs.existsSync(graphGzipPath)) {
@@ -461,3 +473,5 @@ async function warmGraphCache() {
     updatedAt: new Date().toISOString()
   };
 }
+
+export default app;

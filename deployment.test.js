@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
+const apiFunctionUrl = new URL("./api/[...path].js", import.meta.url);
 const renderConfigUrl = new URL("./render.yaml", import.meta.url);
 const vercelConfigUrl = new URL("./vercel.json", import.meta.url);
 
@@ -15,9 +16,14 @@ test("Render blueprint defines a free Node web service", () => {
   assert.match(source, /healthCheckPath: \/api\/health/);
 });
 
-test("Vercel API rewrite points at the Render backend instead of retired Railway", () => {
+test("Vercel serves API requests from the in-repo Express function", () => {
+  assert.equal(existsSync(apiFunctionUrl), true, "api/[...path].js should exist");
+  const source = readFileSync(apiFunctionUrl, "utf8");
+  assert.match(source, /from "\.\.\/server\/index\.js"/);
+  assert.match(source, /app\(req, res\)/);
+
   const config = JSON.parse(readFileSync(vercelConfigUrl, "utf8"));
-  const destination = config.rewrites?.[0]?.destination || "";
-  assert.equal(destination, "https://claudio-radio-web-wzy88-api.onrender.com/api/:path*");
-  assert.doesNotMatch(destination, /railway\.app/i);
+  assert.equal(config.functions?.["api/[...path].js"]?.maxDuration, 300);
+  assert.deepEqual(config.rewrites || [], []);
+  assert.doesNotMatch(JSON.stringify(config), /railway\.app|onrender\.com/i);
 });

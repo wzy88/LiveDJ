@@ -12,6 +12,7 @@ const graphGzipPath = `${graphPath}.gz`;
 const profilePath = path.join(rootDir, "data", "user-profile.json");
 
 let graphCache = null;
+let profileMemoryCache = null;
 
 export function loadGraph() {
   if (!graphCache) {
@@ -39,16 +40,24 @@ export function loadGraph() {
 }
 
 export function loadProfile() {
+  if (profileMemoryCache) return normalizeProfile({ ...profileMemoryCache });
   if (!fs.existsSync(profilePath)) {
-    return {
-      importedTracks: [],
-      feedback: {},
-      recent: [],
-      events: [],
-      updatedAt: null
-    };
+    return emptyProfile();
   }
-  const profile = JSON.parse(fs.readFileSync(profilePath, "utf8"));
+  return normalizeProfile(JSON.parse(fs.readFileSync(profilePath, "utf8")));
+}
+
+function emptyProfile() {
+  return {
+    importedTracks: [],
+    feedback: {},
+    recent: [],
+    events: [],
+    updatedAt: null
+  };
+}
+
+function normalizeProfile(profile = emptyProfile()) {
   profile.importedTracks = profile.importedTracks || [];
   profile.feedback = profile.feedback || {};
   profile.recent = profile.recent || [];
@@ -57,8 +66,15 @@ export function loadProfile() {
 }
 
 export function saveProfile(profile) {
-  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
-  atomicWriteJson(profilePath, { ...profile, updatedAt: new Date().toISOString() });
+  const nextProfile = normalizeProfile({ ...profile, updatedAt: new Date().toISOString() });
+  try {
+    fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+    atomicWriteJson(profilePath, nextProfile);
+    profileMemoryCache = null;
+  } catch (error) {
+    profileMemoryCache = nextProfile;
+    console.warn(`profile could not be persisted: ${error.message}`);
+  }
 }
 
 export async function importPlaylistText(text) {
