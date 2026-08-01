@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 const apiFunctionUrl = new URL("./api/[...path].js", import.meta.url);
+const pagesWorkflowUrl = new URL("./.github/workflows/deploy-pages.yml", import.meta.url);
 const renderConfigUrl = new URL("./render.yaml", import.meta.url);
 const vercelConfigUrl = new URL("./vercel.json", import.meta.url);
 
@@ -26,4 +27,11 @@ test("Vercel serves API requests from the in-repo Express function", () => {
   assert.equal(config.functions?.["api/[...path].js"]?.maxDuration, 300);
   assert.deepEqual(config.rewrites || [], []);
   assert.doesNotMatch(JSON.stringify(config), /railway\.app|onrender\.com/i);
+});
+
+test("GitHub Pages uses the live Vercel API", () => {
+  assert.equal(existsSync(pagesWorkflowUrl), true, "Pages workflow should exist");
+  const source = readFileSync(pagesWorkflowUrl, "utf8");
+  assert.match(source, /VITE_API_BASE: https:\/\/claudio-radio-web\.vercel\.app/);
+  assert.doesNotMatch(source, /railway\.app|onrender\.com/i);
 });
