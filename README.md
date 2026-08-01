@@ -31,6 +31,25 @@ The backend is a long-running Node service:
 npm start
 ```
 
+### Render Free
+
+The committed `render.yaml` deploys `claudio-radio-web-wzy88-api` as a free
+Render Web Service in Singapore. Create a Blueprint from this repository and
+deploy it without adding a payment method. The service reads the committed
+`data/song-graph.json.gz`, so no separate graph upload is required.
+
+After Render assigns the service URL, verify:
+
+```bash
+curl https://claudio-radio-web-wzy88-api.onrender.com/api/health
+curl https://claudio-radio-web-wzy88-api.onrender.com/api/graph/stats
+```
+
+The Vercel `/api/:path*` rewrite is already pointed at that Render URL. Free
+Render services sleep after inactivity, so the first request can take about a
+minute. Their filesystem is ephemeral; imported playlists and feedback can be
+lost after a restart until persistent user storage is added.
+
 It serves both `/api/*` and the built `dist/` frontend when `dist` exists.
 
 Recommended backend targets: Cloud Run, Render, Railway, Fly.io, or a VPS. Vercel Serverless is not ideal for this backend because the runtime depends on a large local song graph, TTS generation, and audio proxy streaming.

@@ -12,3 +12,9 @@ test("dialogue endpoint enriches companion chat with broadcast context", () => {
   assert.match(dialogueBlock, /broadcastContext/);
   assert.match(dialogueBlock, /generateDialogueReplyWithLlm\(\{/);
 });
+
+test("runtime treats the committed gzip song graph as available", () => {
+  assert.match(indexSource, /const graphGzipPath = `\$\{graphPath\}\.gz`;/);
+  assert.match(indexSource, /fs\.existsSync\(graphPath\) \|\| fs\.existsSync\(graphGzipPath\)/);
+  assert.match(indexSource, /if \(!fs\.existsSync\(graphPath\) && !fs\.existsSync\(graphGzipPath\)\) return;/);
+});

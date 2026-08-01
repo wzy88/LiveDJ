@@ -144,12 +144,17 @@ function App() {
     setLlmStatus(health?.llm || null);
     setGraphStats(stats);
     setProfile(profileResult);
-    if (stats?.error) {
-      setStatus("还没有歌曲图谱，请先运行 npm run graph:build。");
+    if (!Number.isFinite(stats?.songCount)) {
+      const reason = stats?.error || "后端没有返回歌曲图谱";
+      setStatus(`电台服务暂时不可用：${reason}。请稍后刷新。`);
       return;
     }
     setStatus(`已加载 ${stats.songCount.toLocaleString()} 首歌曲画像。`);
-    await loadRecommendations();
+    try {
+      await loadRecommendations();
+    } catch (error) {
+      setStatus(`电台服务暂时不可用：${error.message}。请稍后刷新。`);
+    }
   }
 
   async function importPlaylist() {

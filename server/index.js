@@ -24,10 +24,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
 const graphPath = path.join(rootDir, "data", "song-graph.json");
+const graphGzipPath = `${graphPath}.gz`;
 const ttsCache = new Map();
 let graphBootstrap = {
-  state: fs.existsSync(graphPath) ? "ready" : "missing",
-  message: fs.existsSync(graphPath) ? "song graph is available" : "song graph is not loaded yet",
+  state: fs.existsSync(graphPath) || fs.existsSync(graphGzipPath) ? "ready" : "missing",
+  message: fs.existsSync(graphPath) || fs.existsSync(graphGzipPath) ? "song graph is available" : "song graph is not loaded yet",
   updatedAt: new Date().toISOString()
 };
 const allowedOrigins = new Set(
@@ -397,7 +398,7 @@ setInterval(() => {
 }, 60_000);
 
 async function ensureRuntimeData() {
-  if (fs.existsSync(graphPath)) {
+  if (fs.existsSync(graphPath) || fs.existsSync(graphGzipPath)) {
     graphBootstrap = {
       state: "ready",
       message: "song graph is available",
@@ -447,7 +448,7 @@ async function ensureRuntimeData() {
 }
 
 async function warmGraphCache() {
-  if (!fs.existsSync(graphPath)) return;
+  if (!fs.existsSync(graphPath) && !fs.existsSync(graphGzipPath)) return;
   graphBootstrap = {
     state: "loading",
     message: "warming song graph cache",
